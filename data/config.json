@@ -1,0 +1,36 @@
+{
+  "providers": {
+    "AGY": {
+      "color": "#4FC3F7",
+      "icon": "🤖",
+      "monthly_budget": 1000000
+    },
+    "Codex": {
+      "color": "#81C784",
+      "icon": "💻",
+      "monthly_budget": 500000
+    },
+    "DeepSeek": {
+      "color": "#FFB74D",
+      "icon": "🧠",
+      "monthly_budget": 2000000
+    },
+    "Mimo": {
+      "color": "#CE93D8",
+      "icon": "🎯",
+      "monthly_budget": 1000000
+    }
+  },
+  "display": {
+    "font_size": 18,
+    "font_name": "Segoe UI Variable Display",
+    "separator_color": [
+      180,
+      180,
+      200
+    ],
+    "width": 620,
+    "update_interval_ms": 3000,
+    "show_percent_left": false
+  }
+}
