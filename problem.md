@@ -1,5 +1,8 @@
 # AI Token Tracker Widget v2 — Technical Retrospective & Problem Incident Report
 
+> [!WARNING]
+> เอกสารนี้เป็น retrospective จาก implementation เดิมและข้อความ “Fully Resolved” ด้านล่างไม่ตรงกับผลตรวจระบบวันที่ 2026-08-01 แล้ว โปรดใช้ [`docs/superpowers/specs/2026-08-01-quota-tracker-reliability-design.md`](docs/superpowers/specs/2026-08-01-quota-tracker-reliability-design.md) เป็น source of truth สำหรับ root cause, architecture และ acceptance criteria ปัจจุบัน
+
 > **Target Audience:** Future AI Agents & Systems Developers  
 > **Date:** August 1, 2026  
 > **System Location:** `C:\Users\jib\.quickwork\profiles\enterprise-2076315bcdb6\sessions\a0419935-6f63-4f7c-96b9-05ccabe83aac\workspace\artifacts\ai_token_widget_v2\`  
