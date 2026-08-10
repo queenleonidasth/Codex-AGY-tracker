@@ -93,7 +93,7 @@ def test_render_segments_include_waiting_text_without_providers():
     """The empty-provider state must enter the same measured alignment pipeline."""
     segments = widget._render_segments(_view(""), {})
 
-    assert [segment.text for segment in segments] == ["AI Usage — waiting for data"]
+    assert [segment.text for segment in segments] == ["Q-Tracker — waiting for data"]
     assert segments[0].gap_after == 0
 
 

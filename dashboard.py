@@ -41,7 +41,7 @@ class Dashboard:
     def run(self) -> None:
         root = tk.Tk()
         self.root = root
-        root.title("AI Usage Tracker")
+        root.title("Q-Tracker")
         root.geometry("760x700")
         root.minsize(620, 520)
         root.configure(bg=BACKGROUND)
@@ -64,7 +64,7 @@ class Dashboard:
         header.pack(fill=tk.X, pady=(0, 14))
         title_block = ttk.Frame(header, style="App.TFrame")
         title_block.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        ttk.Label(title_block, text="AI Usage Tracker", style="Title.TLabel").pack(anchor=tk.W)
+        ttk.Label(title_block, text="Q-Tracker", style="Title.TLabel").pack(anchor=tk.W)
         self.status_var = tk.StringVar(value="Loading last known data…")
         ttk.Label(title_block, textvariable=self.status_var, style="Subtitle.TLabel").pack(anchor=tk.W, pady=(3, 0))
         self.startup_var = tk.BooleanVar(value=is_startup_enabled())
@@ -137,7 +137,7 @@ class Dashboard:
         if self.root is None:
             return
         window = tk.Toplevel(self.root)
-        window.title("AI Usage Tracker diagnostics")
+        window.title("Q-Tracker diagnostics")
         window.geometry("720x520")
         window.configure(bg=BACKGROUND)
         text = tk.Text(

@@ -20,7 +20,7 @@ class SingleInstanceGuard:
         self.marker_path = Path(marker_path)
         identity = str(self.marker_path.resolve()).casefold().encode("utf-8")
         suffix = hashlib.sha256(identity).hexdigest()[:24]
-        raw_name = name or f"AIUsageTracker-{suffix}"
+        raw_name = name or f"Q-Tracker-{suffix}"
         self.name = raw_name if "\\" in raw_name else f"Local\\{raw_name}"
         self._handle: Any = None
         self._kernel: Any = None
@@ -95,7 +95,7 @@ class SingleInstanceGuard:
 
     def __enter__(self) -> "SingleInstanceGuard":
         if not self.acquire():
-            raise RuntimeError("Another AIUsageTracker instance is already running")
+            raise RuntimeError("Another Q-Tracker instance is already running")
         return self
 
     def __exit__(self, *_args: Any) -> None:

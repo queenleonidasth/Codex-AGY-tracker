@@ -40,6 +40,7 @@ def test_diagnostics_whitelists_fields_and_never_emits_auth_values(tmp_path):
     assert "access_token" not in rendered.lower()
     assert "refresh_token" not in rendered.lower()
     parsed = json.loads(rendered)
+    assert parsed["application"]["name"] == "Q-Tracker"
     assert parsed["providers"]["codex"]["status"] == "ok"
     assert parsed["scanner"]["files_seen"] == 7
 

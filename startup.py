@@ -7,7 +7,7 @@ from typing import Any, Sequence
 
 
 RUN_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
-VALUE_NAME = "AIUsageTracker"
+VALUE_NAME = "Q-Tracker"
 
 
 def _registry(registry: Any = None):

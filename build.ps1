@@ -13,7 +13,7 @@ if ($LASTEXITCODE -ne 0) { throw "Tests failed; executable was not built." }
 
 $Targets = @(
     (Join-Path $ProjectRoot "build"),
-    (Join-Path $ProjectRoot "dist\AIUsageTracker")
+    (Join-Path $ProjectRoot "dist\Q-Tracker")
 )
 $AllowedPrefix = $ProjectRoot.TrimEnd([System.IO.Path]::DirectorySeparatorChar) + [System.IO.Path]::DirectorySeparatorChar
 foreach ($Target in $Targets) {
@@ -26,10 +26,10 @@ foreach ($Target in $Targets) {
     }
 }
 
-& $VenvPython -m PyInstaller --noconfirm AIUsageTracker.spec
+& $VenvPython -m PyInstaller --noconfirm Q-Tracker.spec
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed." }
 
-$Executable = Join-Path $ProjectRoot "dist\AIUsageTracker\AIUsageTracker.exe"
+$Executable = Join-Path $ProjectRoot "dist\Q-Tracker\Q-Tracker.exe"
 if (-not (Test-Path -LiteralPath $Executable)) {
     throw "Build finished without the expected executable: $Executable"
 }

@@ -1,4 +1,4 @@
-# AI Usage Tracker for Windows
+# Q-Tracker for Windows
 
 แอป Windows 11 สำหรับดู quota ของ **Codex** และ **Antigravity (AGY)** บน taskbar พร้อม system tray, dashboard, การรวม token usage ของ Codex อัตโนมัติ และการแจ้งเตือนเมื่อ quota ต่ำ
 
@@ -25,7 +25,7 @@ powershell -ExecutionPolicy Bypass -File .\setup.ps1
 - ดับเบิลคลิกข้อความบน taskbar หรือ tray icon เพื่อเปิด dashboard
 - คลิกขวาที่ taskbar/tray เพื่อ Refresh, ดู token summary หรือ Exit
 - Dashboard แสดง quota จริง, เวลาจน reset, source, freshness และยอด token วันนี้/เดือนนี้/ทั้งหมด
-- เปิด `Start with Windows` ใน dashboard เพื่อเพิ่มเฉพาะค่า `AIUsageTracker` ใต้ HKCU; ไม่ต้องใช้สิทธิ์ admin
+- เปิด `Start with Windows` ใน dashboard เพื่อเพิ่มเฉพาะค่า `Q-Tracker` ใต้ HKCU; ไม่ต้องใช้สิทธิ์ admin
 - การแจ้งเตือนเริ่มที่ 20%, 10% และ 5% และแจ้งเพียงครั้งเดียวต่อ threshold/reset window
 
 ### สัญลักษณ์สถานะ
@@ -63,10 +63,10 @@ powershell -ExecutionPolicy Bypass -File .\build.ps1
 Build gate จะรัน test suite ก่อนสร้าง PyInstaller แบบ `onedir/windowed` ที่:
 
 ```text
-dist\AIUsageTracker\AIUsageTracker.exe
+dist\Q-Tracker\Q-Tracker.exe
 ```
 
-ต้องเก็บทั้งโฟลเดอร์ `dist\AIUsageTracker` ไว้ด้วยกัน ไม่ควรคัดลอกเฉพาะไฟล์ `.exe`
+ต้องเก็บทั้งโฟลเดอร์ `dist\Q-Tracker` ไว้ด้วยกัน ไม่ควรคัดลอกเฉพาะไฟล์ `.exe`
 
 ## คำสั่งดูแลระบบ
 
@@ -89,7 +89,7 @@ dist\AIUsageTracker\AIUsageTracker.exe
 | โหมด | State/config/log |
 |---|---|
 | รันจาก source | `<project>\data` |
-| รัน executable | `%LOCALAPPDATA%\AIUsageTracker` |
+| รัน executable | `%LOCALAPPDATA%\Q-Tracker` |
 
 ไฟล์หลักคือ `token_usage.json`, `config.json` และ `logs\app.log` State ใช้ schema v3, file lock ข้าม process และ atomic replace; หาก JSON เสียจะสำรองเป็น `token_usage.json.corrupt-*` ก่อนกู้ค่าเริ่มต้น
 

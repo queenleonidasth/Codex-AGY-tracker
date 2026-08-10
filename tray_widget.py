@@ -46,7 +46,7 @@ class TokenTrayIcon:
             font = ImageFont.truetype("segoeuib.ttf", 27)
         except OSError:
             font = ImageFont.load_default()
-        text = "AI"
+        text = "Q"
         bounds = draw.textbbox((0, 0), text, font=font)
         width, height = bounds[2] - bounds[0], bounds[3] - bounds[1]
         draw.text(((64 - width) / 2, (64 - height) / 2 - 3), text, fill=ring, font=font)
@@ -63,9 +63,9 @@ class TokenTrayIcon:
             item("Exit", self._quit),
         )
         self.icon = pystray.Icon(
-            "ai_usage_tracker",
+            "q_tracker",
             self._create_image(),
-            "AI Usage Tracker",
+            "Q-Tracker",
             menu,
         )
         self.icon.run_detached()
@@ -94,7 +94,7 @@ class TokenTrayIcon:
                 )
                 if self.icon is not None:
                     self.icon.icon = self._create_image(view)
-                    self.icon.title = view.compact_text[:127] or "AI Usage Tracker"
+                    self.icon.title = view.compact_text[:127] or "Q-Tracker"
                     for event in events:
                         self.icon.notify(event.message, event.title)
             if self._stop.wait(5.0):

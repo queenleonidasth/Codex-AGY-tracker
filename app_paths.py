@@ -7,7 +7,7 @@ import sys
 from pathlib import Path
 
 
-APP_NAME = "AIUsageTracker"
+APP_NAME = "Q-Tracker"
 SOURCE_ROOT = Path(__file__).resolve().parent
 
 
@@ -26,7 +26,7 @@ def resource_root() -> Path:
 
 
 def runtime_dir() -> Path:
-    override = os.environ.get("AI_USAGE_TRACKER_DATA_DIR")
+    override = os.environ.get("Q_TRACKER_DATA_DIR") or os.environ.get("AI_USAGE_TRACKER_DATA_DIR")
     if override:
         return Path(override).expanduser().resolve()
     if is_frozen():
@@ -60,7 +60,7 @@ def build_startup_command() -> list[str]:
     """Prefer pythonw in source mode so Windows startup remains windowless."""
     if is_frozen():
         return [sys.executable]
-    built_exe = SOURCE_ROOT / "dist" / "AIUsageTracker" / "AIUsageTracker.exe"
+    built_exe = SOURCE_ROOT / "dist" / "Q-Tracker" / "Q-Tracker.exe"
     if built_exe.exists():
         return [str(built_exe)]
     executable = Path(sys.executable)

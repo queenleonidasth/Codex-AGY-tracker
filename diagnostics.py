@@ -15,7 +15,7 @@ from app_paths import is_frozen, log_dir, runtime_dir, settings_path, state_path
 from settings import Settings
 
 
-LOGGER_NAME = "ai_usage_tracker"
+LOGGER_NAME = "q_tracker"
 _SENSITIVE = re.compile(
     r"(?i)(access[_-]?token|refresh[_-]?token|authorization|csrf|api[_-]?key)"
     r"(\s*[=:]\s*|\s+)([^\s,;\"'}]+)"
@@ -107,7 +107,7 @@ def collect_diagnostics(settings: Settings, state: dict[str, Any]) -> dict[str, 
     }
     return {
         "application": {
-            "name": "AIUsageTracker",
+            "name": "Q-Tracker",
             "version": "1.2.0",
             "frozen": is_frozen(),
         },

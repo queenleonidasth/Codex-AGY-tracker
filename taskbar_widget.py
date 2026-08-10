@@ -263,7 +263,7 @@ def _render_segments(
     provider_styles: dict[str, dict[str, object]],
 ) -> tuple[RenderSegment, ...]:
     if not view.providers:
-        return (RenderSegment("AI Usage — waiting for data", rgb((170, 178, 195))),)
+        return (RenderSegment("Q-Tracker — waiting for data", rgb((170, 178, 195))),)
 
     segments: list[RenderSegment] = []
     for provider_index, provider in enumerate(view.providers):
@@ -472,7 +472,7 @@ def _create_taskbar_popup(
     return u32.CreateWindowExW(
         WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
         class_name,
-        "AI Usage Tracker",
+        "Q-Tracker",
         WS_POPUP | WS_VISIBLE,
         0,
         0,
@@ -504,7 +504,7 @@ def _create_window(max_retries: int = 30, retry_delay: float = 0.5) -> bool:
     if not taskbar:
         return False
     instance = k32.GetModuleHandleW(None)
-    class_name = "AIUsageTrackerTaskbarV1"
+    class_name = "QTrackerTaskbarV1"
     _wndproc_ref = WNDPROC(_wnd_proc)
     if _background_brush is None:
         _background_brush = g32.CreateSolidBrush(COLORKEY_RGB)
