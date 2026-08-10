@@ -299,7 +299,7 @@ def _render_segments(
                 else "#D4D9E5"
             )
             segments.append(
-                RenderSegment(f"{window.remaining_percent:.0f}%", rgb(quota_color))
+                RenderSegment(f"{window.remaining_percent:.0f}%", rgb(quota_color), 4)
             )
             label_gap = 5 if has_next_window else 10 if has_next_provider else 0
             segments.append(

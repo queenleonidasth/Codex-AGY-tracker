@@ -84,6 +84,8 @@ def test_render_segments_preserve_compact_provider_text_order():
         "46%",
         "W",
     ]
+    assert segments[1].text == "91%"
+    assert segments[1].gap_after == 4
     assert segments[-1].gap_after == 0
 
 
