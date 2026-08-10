@@ -35,6 +35,8 @@ def _parser() -> argparse.ArgumentParser:
     modes.add_argument("--dashboard", action="store_true", help="open the full dashboard")
     modes.add_argument("--refresh", action="store_true", help="refresh provider state once")
     modes.add_argument("--diagnostics", action="store_true", help="print a redacted health report")
+    modes.add_argument("--enable-startup", action="store_true", help="enable HKCU startup entry")
+    modes.add_argument("--disable-startup", action="store_true", help="disable HKCU startup entry")
     return parser
 
 
@@ -46,6 +48,21 @@ def main(
 ) -> int:
     args = _parser().parse_args(argv)
     active_service = service or get_service()
+
+    if args.enable_startup:
+        from app_paths import build_startup_command
+        from startup import set_startup
+
+        set_startup(True, build_startup_command())
+        print("Windows startup enabled")
+        return 0
+
+    if args.disable_startup:
+        from startup import set_startup
+
+        set_startup(False, [])
+        print("Windows startup disabled")
+        return 0
 
     if args.diagnostics:
         from diagnostics import collect_diagnostics, render_diagnostics

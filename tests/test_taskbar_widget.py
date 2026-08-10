@@ -185,5 +185,44 @@ def test_create_window_stops_when_taskbar_owner_is_missing(monkeypatch):
         ),
     )
 
-    assert widget._create_window() is False
+    assert widget._create_window(max_retries=1, retry_delay=0) is False
     assert create_calls == []
+
+
+def test_run_taskbar_sets_retry_timer_when_initial_window_creation_fails(monkeypatch):
+    """When Explorer is not available on startup, run_taskbar must set a retry timer instead of exiting immediately."""
+    timer_calls = []
+    messages = [SimpleNamespace(message=123)]
+
+    def fake_get_message(msg_ptr, *_args):
+        if messages:
+            msg = messages.pop(0)
+            getattr(msg_ptr, "_obj", msg_ptr).message = msg.message
+            return 1
+        return 0
+
+    monkeypatch.setattr(widget, "_create_window", lambda *args, **kwargs: False)
+    monkeypatch.setattr(widget, "build_tracker_view", lambda *_: _view("test"))
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            SetTimer=lambda *args: timer_calls.append(("set", args)) or 999,
+            KillTimer=lambda *args: timer_calls.append(("kill", args)),
+            GetMessageW=fake_get_message,
+            TranslateMessage=lambda *_: None,
+            DispatchMessageW=lambda *_: None,
+        ),
+    )
+
+    result = widget.run_taskbar(
+        store=SimpleNamespace(load=lambda: {}),
+        settings=SimpleNamespace(enabled_providers=()),
+        on_open=lambda: None,
+        on_refresh=lambda: None,
+    )
+
+    assert result == 0
+    assert ("set", (None, 0, 2000, None)) in timer_calls
+    assert ("kill", (None, 999)) in timer_calls
+

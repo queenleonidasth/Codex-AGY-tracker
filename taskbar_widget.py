@@ -141,6 +141,9 @@ u32.GetCursorPos.argtypes = [ctypes.POINTER(wintypes.POINT)]
 u32.GetCursorPos.restype = BOOL
 u32.SetForegroundWindow.argtypes = [HANDLE]
 u32.SetForegroundWindow.restype = BOOL
+u32.RegisterWindowMessageW.argtypes = [ctypes.c_wchar_p]
+u32.RegisterWindowMessageW.restype = UINT
+WM_TASKBARCREATED = u32.RegisterWindowMessageW("TaskbarCreated")
 
 g32.CreateSolidBrush.argtypes = [ctypes.c_uint]
 g32.CreateSolidBrush.restype = HANDLE
@@ -239,10 +242,16 @@ _background_brush: Optional[HANDLE] = None
 _font_cache = FontCache()
 
 
+ERROR_CLASS_ALREADY_EXISTS = 1410
+
+
 def request_close() -> None:
     """Ask the UI thread to close; safe to call from the tray thread."""
     if _runtime is not None and _runtime.hwnd:
         u32.PostMessageW(_runtime.hwnd, WM_CLOSE, 0, 0)
+    else:
+        u32.PostQuitMessage(0)
+
 
 
 def _right_aligned_start(client_width: int, content_width: int) -> int:
@@ -431,7 +440,7 @@ def _wnd_proc(hwnd: HWND, message: int, wparam: int, lparam: int) -> int:
             return 0
         if message == WM_ERASEBKGND:
             return 1
-        if message in (WM_DISPLAYCHANGE, WM_SETTINGCHANGE, WM_DPICHANGED):
+        if message in (WM_DISPLAYCHANGE, WM_SETTINGCHANGE, WM_DPICHANGED) or (WM_TASKBARCREATED and message == WM_TASKBARCREATED):
             _reposition(hwnd)
             return 0
         if message == WM_LBUTTONDBLCLK:
@@ -476,17 +485,29 @@ def _create_taskbar_popup(
     )
 
 
-def _create_window() -> bool:
+def _create_window(max_retries: int = 30, retry_delay: float = 0.5) -> bool:
     global _wndproc_ref, _background_brush
     if _runtime is None:
         return False
-    taskbar = u32.FindWindowW("Shell_TrayWnd", None)
+    if _runtime.hwnd:
+        return True
+    import time
+
+    taskbar = None
+    for attempt in range(max_retries):
+        taskbar = u32.FindWindowW("Shell_TrayWnd", None)
+        if taskbar:
+            break
+        if attempt < max_retries - 1 and retry_delay > 0:
+            time.sleep(retry_delay)
+
     if not taskbar:
         return False
     instance = k32.GetModuleHandleW(None)
     class_name = "AIUsageTrackerTaskbarV1"
     _wndproc_ref = WNDPROC(_wnd_proc)
-    _background_brush = g32.CreateSolidBrush(COLORKEY_RGB)
+    if _background_brush is None:
+        _background_brush = g32.CreateSolidBrush(COLORKEY_RGB)
     window_class = WNDCLASSEX()
     window_class.cbSize = ctypes.sizeof(WNDCLASSEX)
     window_class.style = CS_HREDRAW | CS_VREDRAW | CS_DBLCLKS
@@ -496,7 +517,9 @@ def _create_window() -> bool:
     window_class.hbrBackground = _background_brush
     window_class.lpszClassName = class_name
     if not u32.RegisterClassExW(ctypes.byref(window_class)):
-        return False
+        get_err = getattr(k32, "GetLastError", ctypes.get_last_error)
+        if get_err() != ERROR_CLASS_ALREADY_EXISTS:
+            return False
     _runtime.hwnd = _create_taskbar_popup(
         instance,
         class_name,
@@ -533,18 +556,28 @@ def run_taskbar(
         on_refresh=on_refresh,
         view=build_tracker_view(store.load(), settings.enabled_providers),
     )
+    retry_timer = None
     try:
-        if not _create_window():
-            return 1
+        if not _create_window(max_retries=10, retry_delay=0.2):
+            retry_timer = u32.SetTimer(None, 0, 2000, None)
+
         message = wintypes.MSG()
         while True:
             result = u32.GetMessageW(ctypes.byref(message), None, 0, 0)
             if result <= 0:
                 break
+            if retry_timer and message.message == WM_TIMER and _runtime and not _runtime.hwnd:
+                if _create_window(max_retries=1, retry_delay=0):
+                    u32.KillTimer(None, retry_timer)
+                    retry_timer = None
+
             u32.TranslateMessage(ctypes.byref(message))
             u32.DispatchMessageW(ctypes.byref(message))
         return 0
     finally:
+        if retry_timer:
+            u32.KillTimer(None, retry_timer)
+            retry_timer = None
         _font_cache.cleanup()
         if _background_brush:
             g32.DeleteObject(_background_brush)

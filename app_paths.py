@@ -60,6 +60,9 @@ def build_startup_command() -> list[str]:
     """Prefer pythonw in source mode so Windows startup remains windowless."""
     if is_frozen():
         return [sys.executable]
+    built_exe = SOURCE_ROOT / "dist" / "AIUsageTracker" / "AIUsageTracker.exe"
+    if built_exe.exists():
+        return [str(built_exe)]
     executable = Path(sys.executable)
     if executable.name.lower() == "python.exe":
         pythonw = executable.with_name("pythonw.exe")

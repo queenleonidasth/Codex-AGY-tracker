@@ -46,4 +46,6 @@ if ($LASTEXITCODE -ne 0) { throw "Dependency installation failed." }
 & $VenvPython -m pytest -q
 if ($LASTEXITCODE -ne 0) { throw "Tests failed; setup was not completed." }
 
-Write-Host "Setup complete. Run .\run.bat, or build the executable with .\build.ps1."
+& $VenvPython -c "from startup import set_startup; from app_paths import build_startup_command; set_startup(True, build_startup_command())"
+
+Write-Host "Setup complete and Windows startup registered. Run .\run.bat, or build the executable with .\build.ps1."

@@ -33,4 +33,5 @@ $Executable = Join-Path $ProjectRoot "dist\AIUsageTracker\AIUsageTracker.exe"
 if (-not (Test-Path -LiteralPath $Executable)) {
     throw "Build finished without the expected executable: $Executable"
 }
-Write-Host "Built $Executable"
+& $VenvPython -c "from startup import set_startup; from app_paths import build_startup_command; set_startup(True, build_startup_command())"
+Write-Host "Built $Executable and updated Windows startup registration."
