@@ -1,0 +1,19 @@
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+
+# Runtime data (user-specific, regenerated)
+data/token_usage.json
+data/config.json
+data/.token_usage.lock
+data/.instance.lock
+
+# Logs
+*.log
+
+# Editor/IDE
+.vscode/
+.idea/
+*.swp
+*~
