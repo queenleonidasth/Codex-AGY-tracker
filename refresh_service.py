@@ -1,22 +1,19 @@
-"""
-RefreshCoordinator — single-flight fetch with backoff and instance guard.
-Part of the reliability refactor (commit d2ab9d3 design).
+"""Legacy compatibility helpers retained for the old auto-fetch CLI.
 
-Fixes:
-- Bug #2: Uses DETACHED_PROCESS only (not CREATE_NO_WINDOW) with named constant.
-- Bug #3: Single-flight lock prevents overlapping fetches per provider.
-- Bug #3: Single-instance guard via lockfile for the whole process.
+The production application uses :mod:`usage_service` for provider refresh and
+:mod:`instance_guard` for process ownership.
 """
 
 from __future__ import annotations
 
 import os
-import sys
 import subprocess
 import threading
 import time
 from pathlib import Path
 from typing import Callable, Optional
+
+from instance_guard import SingleInstanceGuard
 
 # --- Process Creation Flags (Bug #2 fix) ---
 # The old code used 0x08000008 which combines CREATE_NO_WINDOW (0x08000000)
@@ -30,86 +27,6 @@ DETACHED_PROCESS = 0x00000008
 # Paths
 HOME = Path.home()
 AGY_EXE = Path(os.environ.get("LOCALAPPDATA", HOME / "AppData" / "Local")) / "agy" / "bin" / "agy.exe"
-LOCKFILE_PATH = Path(__file__).parent / "data" / ".instance.lock"
-
-
-class SingleInstanceGuard:
-    """
-    Process-level single-instance guard using a lockfile.
-    
-    Fix for Bug #3: run_taskbar.bat launched new instances without checking
-    if one was already running. This guard uses a lockfile with PID to
-    prevent multiple instances.
-    """
-
-    def __init__(self, lockfile: Optional[Path] = None):
-        self.lockfile = lockfile or LOCKFILE_PATH
-        self._fd = None
-
-    def acquire(self) -> bool:
-        """
-        Try to acquire the instance lock.
-        Returns True if this is the only instance, False if another is running.
-        """
-        self.lockfile.parent.mkdir(parents=True, exist_ok=True)
-
-        # Check if lockfile exists and if the PID in it is still alive
-        if self.lockfile.exists():
-            try:
-                old_pid = int(self.lockfile.read_text().strip())
-                if self._is_pid_alive(old_pid):
-                    return False  # Another instance is running
-            except (ValueError, OSError):
-                pass  # Stale/corrupt lockfile, proceed to overwrite
-
-        # Write our PID
-        try:
-            self.lockfile.write_text(str(os.getpid()))
-            return True
-        except OSError:
-            return False
-
-    def release(self):
-        """Release the instance lock."""
-        try:
-            if self.lockfile.exists():
-                # Only delete if it's our PID
-                pid_in_file = int(self.lockfile.read_text().strip())
-                if pid_in_file == os.getpid():
-                    self.lockfile.unlink(missing_ok=True)
-        except (ValueError, OSError):
-            pass
-
-    @staticmethod
-    def _is_pid_alive(pid: int) -> bool:
-        """Check if a process with given PID is still running (Windows)."""
-        if sys.platform == "win32":
-            try:
-                import ctypes
-                kernel32 = ctypes.windll.kernel32
-                SYNCHRONIZE = 0x00100000
-                handle = kernel32.OpenProcess(SYNCHRONIZE, False, pid)
-                if handle:
-                    kernel32.CloseHandle(handle)
-                    return True
-                return False
-            except Exception:
-                return False
-        else:
-            # Unix fallback
-            try:
-                os.kill(pid, 0)
-                return True
-            except (OSError, ProcessLookupError):
-                return False
-
-    def __enter__(self):
-        return self.acquire()
-
-    def __exit__(self, *_):
-        self.release()
-
-
 class RefreshCoordinator:
     """
     Coordinates quota fetches with:

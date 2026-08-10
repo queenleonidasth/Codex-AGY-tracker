@@ -14,7 +14,7 @@ from typing import Any, Callable, Optional
 
 from settings import Settings
 from state_store import AtomicStateStore
-from ui_models import TrackerView, build_tracker_view
+from ui_models import TrackerView, build_tracker_view, context_detail_lines
 
 
 HANDLE = ctypes.c_void_p
@@ -65,6 +65,7 @@ LWA_COLORKEY = 0x00000001
 TPM_RETURNCMD = 0x0100
 MF_STRING = 0x0000
 MF_SEPARATOR = 0x0800
+MF_GRAYED = 0x0001
 FW_BOLD = 700
 DEFAULT_CHARSET = 1
 ANTIALIASED_QUALITY = 4
@@ -329,6 +330,9 @@ def _show_menu(hwnd: HWND) -> None:
     try:
         u32.AppendMenuW(menu, MF_STRING, 1, "Open dashboard")
         u32.AppendMenuW(menu, MF_STRING, 2, "Refresh now")
+        u32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
+        for detail in context_detail_lines(_runtime.view):
+            u32.AppendMenuW(menu, MF_STRING | MF_GRAYED, 0, detail[:160])
         u32.AppendMenuW(menu, MF_SEPARATOR, 0, None)
         u32.AppendMenuW(menu, MF_STRING, 9, "Exit")
         point = wintypes.POINT()

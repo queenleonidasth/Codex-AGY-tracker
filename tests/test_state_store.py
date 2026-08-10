@@ -88,6 +88,19 @@ def test_corrupt_file_is_backed_up_before_mutation_recovers(tmp_path):
     assert json.loads(path.read_text(encoding="utf-8"))["providers"]["codex"]["status"] == "ok"
 
 
+def test_normal_load_backs_up_and_replaces_corrupt_state(tmp_path):
+    """Dashboard/diagnostics reads must recover even before the next mutation."""
+    path = tmp_path / "state.json"
+    path.write_text("{broken", encoding="utf-8")
+    store = AtomicStateStore(path)
+
+    recovered = store.load(force=True)
+
+    assert recovered["_meta"]["schema_version"] == 3
+    assert len(list(tmp_path.glob("state.json.corrupt-*"))) == 1
+    assert json.loads(path.read_text(encoding="utf-8"))["_meta"]["schema_version"] == 3
+
+
 def test_loaded_state_is_a_copy_and_requires_mutate_to_persist(tmp_path):
     """Mutating a cached dictionary outside a transaction must not leak into later reads."""
     store = AtomicStateStore(tmp_path / "state.json")

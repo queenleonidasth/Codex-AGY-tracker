@@ -15,9 +15,11 @@ Compatible with Python 3.14, stdlib only, Windows-specific.
 from __future__ import annotations
 
 import json
+import os
 import re
 import ssl
 import subprocess
+import tempfile
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -428,14 +430,28 @@ def _parse_model_configs(configs: list) -> Optional[dict]:
 
 def _write_cache(data: dict) -> None:
     """Write quota data to agy_quota_cache.json for other consumers."""
+    temporary = None
     try:
         AGY_QUOTA_CACHE.parent.mkdir(parents=True, exist_ok=True)
-        AGY_QUOTA_CACHE.write_text(
-            json.dumps(data, indent=2),
-            encoding="utf-8",
+        descriptor, temporary = tempfile.mkstemp(
+            prefix=f".{AGY_QUOTA_CACHE.stem}-",
+            suffix=".tmp",
+            dir=AGY_QUOTA_CACHE.parent,
         )
+        with os.fdopen(descriptor, "w", encoding="utf-8") as handle:
+            json.dump(data, handle, indent=2, ensure_ascii=False)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, AGY_QUOTA_CACHE)
+        temporary = None
     except OSError:
         pass  # Non-critical: cache write failure shouldn't break anything
+    finally:
+        if temporary is not None:
+            try:
+                os.unlink(temporary)
+            except OSError:
+                pass
 
 
 # --- Public API ---

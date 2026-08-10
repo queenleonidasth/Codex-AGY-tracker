@@ -213,7 +213,12 @@ def apply_monotonic_guard(
     old_window: Optional[QuotaWindow],
 ) -> QuotaWindow:
     """Prevent a cached value increasing inside the same reset identity."""
-    if old_window is None or new_window.reset_time != old_window.reset_time:
+    if (
+        old_window is None
+        or not new_window.reset_time
+        or not old_window.reset_time
+        or new_window.reset_time != old_window.reset_time
+    ):
         return new_window
 
     remaining_percent = min(new_window.remaining_percent, old_window.remaining_percent)

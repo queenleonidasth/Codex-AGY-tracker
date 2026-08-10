@@ -58,6 +58,25 @@ class TrackerView:
         )
 
 
+def context_detail_lines(view: TrackerView) -> tuple[str, ...]:
+    """Readable provider detail lines for compact native context surfaces."""
+    if not view.providers:
+        return ("Waiting for provider data",)
+    lines: list[str] = []
+    for provider in view.providers:
+        source = provider.source or "no source"
+        lines.append(
+            f"{provider.display_name} · {provider.status} · {source} · confirmed {provider.age_text}"
+        )
+        for window in provider.windows:
+            lines.append(
+                f"  {window.label}: {window.remaining_percent:.1f}% left · resets {window.reset_in}"
+            )
+        if provider.message:
+            lines.append(f"  {provider.message}")
+    return tuple(lines)
+
+
 def _parse_timestamp(value: Any) -> Optional[datetime]:
     if not isinstance(value, str) or not value.strip():
         return None

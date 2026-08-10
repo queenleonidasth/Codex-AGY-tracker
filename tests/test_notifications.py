@@ -48,6 +48,11 @@ def test_initial_observation_below_multiple_thresholds_emits_one_notice():
     assert len(events) == 1
     assert events[0].threshold == 10
 
+    state = policy.apply({}, events)
+    assert policy.events(state, {"codex": snapshot(8, "A")}) == []
+    assert any(key.endswith("/20") for key in state["notifications"]["sent"])
+    assert any(key.endswith("/10") for key in state["notifications"]["sent"])
+
 
 def test_claim_atomically_persists_notice_key(tmp_path):
     store = AtomicStateStore(tmp_path / "state.json")

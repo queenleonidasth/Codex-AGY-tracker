@@ -12,6 +12,7 @@ from quota_models import ProviderSnapshot, utc_now_iso
 @dataclass(frozen=True, slots=True)
 class NotificationEvent:
     key: str
+    reserve_keys: tuple[str, ...]
     provider_id: str
     provider_name: str
     window_id: str
@@ -69,6 +70,7 @@ class NotificationPolicy:
                 events.append(
                     NotificationEvent(
                         key=key,
+                        reserve_keys=tuple(value[1] for value in eligible),
                         provider_id=str(provider_id),
                         provider_name=snapshot.provider_name,
                         window_id=str(window_id),
@@ -99,7 +101,8 @@ class NotificationPolicy:
             notifications["sent"] = sent
         recorded_at = utc_now_iso()
         for event in events:
-            sent[event.key] = recorded_at
+            for key in event.reserve_keys or (event.key,):
+                sent[key] = recorded_at
         return state
 
     def claim(self, store: Any, snapshots: Mapping[str, Any]) -> list[NotificationEvent]:
@@ -115,4 +118,3 @@ class NotificationPolicy:
 
         store.mutate(update)
         return claimed
-

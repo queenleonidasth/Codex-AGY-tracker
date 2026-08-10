@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from ui_models import (
     build_provider_view,
     build_tracker_view,
+    context_detail_lines,
     format_countdown,
     format_tokens,
 )
@@ -117,3 +118,28 @@ def test_format_tokens_uses_readable_units_without_hiding_small_values():
     assert format_tokens(999) == "999"
     assert format_tokens(1_250) == "1.2K"
     assert format_tokens(2_500_000) == "2.5M"
+
+
+def test_context_details_include_source_freshness_reset_and_error():
+    provider = build_provider_view(
+        _provider(
+            status="error",
+            observed_at="2026-08-10T08:00:00Z",
+            windows={"session": _window("5H", 42)},
+            message="Timed out",
+        ),
+        NOW,
+    )
+    view = build_tracker_view(
+        {"providers": {"codex": _provider()}, "usage": {}},
+        provider_order=(),
+        now=NOW,
+    )
+    view = type(view)(providers=(provider,), compact_text=provider.compact_text, token_totals=view.token_totals)
+
+    lines = context_detail_lines(view)
+
+    assert "live_api" in lines[0]
+    assert "2h ago" in lines[0]
+    assert "resets 2h 30m" in lines[1]
+    assert lines[2] == "  Timed out"

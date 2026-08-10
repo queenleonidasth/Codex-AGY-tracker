@@ -29,6 +29,24 @@ TTL_SECONDS = {
     FetchStatus.RATE_LIMITED: 300.0,
 }
 
+TOKEN_METRICS = ("input", "cached_input", "output", "reasoning_output", "total")
+
+
+def _token_metrics(value: Any) -> dict[str, int]:
+    raw = value if isinstance(value, dict) else {}
+    metrics: dict[str, int] = {}
+    for key in TOKEN_METRICS:
+        try:
+            metrics[key] = max(0, int(raw.get(key, 0)))
+        except (TypeError, ValueError):
+            metrics[key] = 0
+    return metrics
+
+
+def _add_token_metrics(first: Any, second: Any) -> dict[str, int]:
+    left, right = _token_metrics(first), _token_metrics(second)
+    return {key: left[key] + right[key] for key in TOKEN_METRICS}
+
 
 class UsageService:
     def __init__(
@@ -179,16 +197,47 @@ class UsageService:
 
         def update(current: dict[str, Any]) -> None:
             usage = current["usage"]
+            scanner_state = usage["scanner"]
+            baseline = scanner_state.get("codex_baseline")
+            if not isinstance(baseline, dict):
+                # A v3 scanner index means current Codex metrics already came from
+                # this scanner.  Without an index, retain migrated/manual metrics
+                # as an immutable baseline instead of erasing them.
+                already_scanned = (
+                    isinstance(previous_index, dict)
+                    and previous_index.get("version") == 1
+                )
+                baseline = {"daily": {}, "monthly": {}, "total": {}}
+                if not already_scanned:
+                    for period_name in ("daily", "monthly"):
+                        baseline[period_name] = {
+                            period: _token_metrics(providers.get("codex"))
+                            for period, providers in usage[period_name].items()
+                            if isinstance(providers, dict)
+                            and isinstance(providers.get("codex"), dict)
+                        }
+                    baseline["total"] = _token_metrics(usage["total"].get("codex"))
+                scanner_state["codex_baseline"] = copy.deepcopy(baseline)
+
             for period_name in ("daily", "monthly"):
                 for providers in usage[period_name].values():
                     if isinstance(providers, dict):
                         providers.pop("codex", None)
                 source = result.daily if period_name == "daily" else result.monthly
-                for period, metrics in source.items():
-                    usage[period_name].setdefault(period, {})["codex"] = copy.deepcopy(metrics)
-            usage["total"]["codex"] = copy.deepcopy(result.total)
-            usage["scanner"]["codex"] = copy.deepcopy(result.index)
-            usage["scanner"]["codex_diagnostics"] = {
+                baseline_periods = (
+                    baseline.get(period_name)
+                    if isinstance(baseline.get(period_name), dict)
+                    else {}
+                )
+                for period in set(source) | set(baseline_periods):
+                    usage[period_name].setdefault(period, {})["codex"] = _add_token_metrics(
+                        baseline_periods.get(period), source.get(period)
+                    )
+            usage["total"]["codex"] = _add_token_metrics(
+                baseline.get("total"), result.total
+            )
+            scanner_state["codex"] = copy.deepcopy(result.index)
+            scanner_state["codex_diagnostics"] = {
                 "files_seen": result.files_seen,
                 "files_scanned": result.files_scanned,
                 "malformed_lines": result.malformed_lines,

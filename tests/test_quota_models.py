@@ -74,6 +74,15 @@ class TestMonotonicGuardPerWindow(unittest.TestCase):
         self.assertEqual(result.remaining_percent, 100.0)
         self.assertEqual(result.remaining_fraction, 1.0)
 
+    def test_missing_reset_identity_allows_increase(self):
+        """No reset ID means observations cannot safely be treated as one period."""
+        old = QuotaWindow("5h", remaining_percent=10.0, remaining_fraction=0.1, reset_time="")
+        new = QuotaWindow("5h", remaining_percent=95.0, remaining_fraction=0.95, reset_time="")
+
+        result = apply_monotonic_guard(new, old)
+
+        self.assertEqual(result.remaining_percent, 95.0)
+
     def test_5h_resets_independently_of_weekly(self):
         """
         The core bug: 5h window gets new reset_time, weekly doesn't.

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import json
+import logging
 import os
 import shutil
 import sys
@@ -19,6 +20,7 @@ from quota_models import FetchStatus, ProviderSnapshot, QuotaWindow, utc_now_iso
 
 
 SCHEMA_VERSION = 3
+LOGGER = logging.getLogger("ai_usage_tracker")
 
 
 def _provider_id(name: Any) -> str:
@@ -178,7 +180,18 @@ class AtomicStateStore:
                 return copy.deepcopy(self._cache)
             try:
                 state = migrate_state(json.loads(self.data_file.read_text(encoding="utf-8")))
-            except (OSError, json.JSONDecodeError):
+            except json.JSONDecodeError:
+                try:
+                    with self._process_lock():
+                        state = self._read_fresh_or_recover()
+                        state["_meta"]["written_at"] = utc_now_iso()
+                        self._atomic_write(state)
+                    return copy.deepcopy(state)
+                except OSError:
+                    return copy.deepcopy(
+                        self._cache if self._cache_signature is not None else _empty_state()
+                    )
+            except OSError:
                 return copy.deepcopy(self._cache if self._cache_signature is not None else _empty_state())
             self._cache = state
             self._cache_signature = signature
@@ -240,6 +253,7 @@ class AtomicStateStore:
                 )
                 suffix += 1
             shutil.copy2(self.data_file, backup)
+            LOGGER.warning("Corrupt tracker state backed up as %s", backup.name)
             return _empty_state()
 
     @contextmanager

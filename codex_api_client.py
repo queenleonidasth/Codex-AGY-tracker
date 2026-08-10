@@ -22,6 +22,8 @@ from typing import Optional
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen
 
+from quota_models import ProviderErrorKind, ProviderFetchError
+
 # --- Paths ---
 HOME = Path.home()
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", HOME / ".codex"))
@@ -167,7 +169,21 @@ def _classify_window(window: dict) -> Optional[str]:
     return None
 
 
-def _fetch_usage(access_token: str, account_id: Optional[str], verbose: bool = False) -> Optional[dict]:
+def _http_failure(status: int) -> ProviderFetchError:
+    if status in (401, 403):
+        return ProviderFetchError(
+            ProviderErrorKind.AUTH_REQUIRED, "Codex authentication is required"
+        )
+    if status == 429:
+        return ProviderFetchError(
+            ProviderErrorKind.RATE_LIMITED, "Codex usage API rate limit reached"
+        )
+    return ProviderFetchError(
+        ProviderErrorKind.OTHER, f"Codex usage API returned HTTP {int(status)}"
+    )
+
+
+def _fetch_usage(access_token: str, account_id: Optional[str], verbose: bool = False) -> dict:
     """
     GET https://chatgpt.com/backend-api/wham/usage
 
@@ -176,7 +192,7 @@ def _fetch_usage(access_token: str, account_id: Optional[str], verbose: bool = F
         Accept: application/json
         ChatGPT-Account-Id: {account_id}  (if available)
 
-    Returns raw JSON response body, or None on failure.
+    Returns raw JSON and raises a credential-free structured error on failure.
     """
     headers = {
         "Authorization": f"Bearer {access_token}",
@@ -193,23 +209,35 @@ def _fetch_usage(access_token: str, account_id: Optional[str], verbose: bool = F
     try:
         with urlopen(req, timeout=REQUEST_TIMEOUT, context=ctx) as resp:
             if resp.status != 200:
-                if verbose:
-                    print(f"  [Codex API] wham/usage returned HTTP {resp.status}")
-                return None
+                raise _http_failure(resp.status)
             data = resp.read().decode("utf-8")
             return json.loads(data)
-    except HTTPError as e:
-        if verbose:
-            print(f"  [Codex API] wham/usage HTTP error: {e.code} {e.reason}")
-        return None
-    except (URLError, OSError, TimeoutError) as e:
-        if verbose:
-            print(f"  [Codex API] wham/usage network error: {e}")
-        return None
+    except HTTPError as error:
+        raise _http_failure(error.code) from None
+    except TimeoutError:
+        raise ProviderFetchError(
+            ProviderErrorKind.TIMEOUT, "Codex usage API timed out"
+        ) from None
+    except URLError as error:
+        kind = (
+            ProviderErrorKind.TIMEOUT
+            if isinstance(error.reason, TimeoutError)
+            else ProviderErrorKind.OTHER
+        )
+        message = (
+            "Codex usage API timed out"
+            if kind is ProviderErrorKind.TIMEOUT
+            else "Codex usage API is unreachable"
+        )
+        raise ProviderFetchError(kind, message) from None
+    except OSError:
+        raise ProviderFetchError(
+            ProviderErrorKind.OTHER, "Codex usage API is unreachable"
+        ) from None
     except json.JSONDecodeError:
-        if verbose:
-            print("  [Codex API] wham/usage returned invalid JSON")
-        return None
+        raise ProviderFetchError(
+            ProviderErrorKind.PARSE, "Codex usage API returned invalid JSON"
+        ) from None
 
 
 def _clamp_percent(value) -> Optional[float]:
@@ -378,7 +406,7 @@ def fetch_codex_live_limits(verbose: bool = False) -> Optional[dict]:
         }
     }
 
-    Returns None if:
+    Raises ``ProviderFetchError`` if:
     - auth.json is missing or malformed
     - Token is expired (JWT exp < now)
     - API returns non-200 (401/403/429/etc.)
@@ -389,7 +417,10 @@ def fetch_codex_live_limits(verbose: bool = False) -> Optional[dict]:
     if not auth:
         if verbose:
             print("  [Codex API] Cannot read ~/.codex/auth.json")
-        return None
+        raise ProviderFetchError(
+            ProviderErrorKind.AUTH_REQUIRED,
+            "Codex authentication is unavailable; run Codex and sign in once",
+        )
 
     access_token = auth["access_token"]
     account_id = auth["account_id"]
@@ -405,7 +436,10 @@ def fetch_codex_live_limits(verbose: bool = False) -> Optional[dict]:
             expiry_info = _get_token_expiry_info(access_token)
             print(f"  [Codex API] Token EXPIRED: {expiry_info}")
             print("  [Codex API] Run `codex` once to refresh the token.")
-        return None
+        raise ProviderFetchError(
+            ProviderErrorKind.AUTH_REQUIRED,
+            "Codex authentication expired; run Codex to refresh sign-in",
+        )
 
     if verbose:
         expiry_info = _get_token_expiry_info(access_token)
@@ -417,10 +451,6 @@ def fetch_codex_live_limits(verbose: bool = False) -> Optional[dict]:
         print(f"  [Codex API] Fetching {WHAM_USAGE_URL} ...")
 
     body = _fetch_usage(access_token, account_id, verbose=verbose)
-    if body is None:
-        if verbose:
-            print("  [Codex API] Fetch failed — returning None (fallback to JSONL)")
-        return None
 
     # Step 4: Normalize response
     result = _normalize_usage_response(body)
@@ -432,7 +462,10 @@ def fetch_codex_live_limits(verbose: bool = False) -> Optional[dict]:
             rl = body.get("rate_limit", {})
             if isinstance(rl, dict):
                 print(f"  [Codex API] rate_limit keys: {list(rl.keys())}")
-        return None
+        raise ProviderFetchError(
+            ProviderErrorKind.PARSE,
+            "Codex usage API returned an unsupported response",
+        )
 
     if verbose:
         print(f"  [Codex API] Success! {result['percent_left']:.1f}% left "
@@ -497,7 +530,11 @@ def main():
     print("[3] Fetching wham/usage endpoint:")
     print(f"    URL: {WHAM_USAGE_URL}")
     t0 = time.perf_counter()
-    result = fetch_codex_live_limits(verbose=True)
+    try:
+        result = fetch_codex_live_limits(verbose=True)
+    except ProviderFetchError as error:
+        print(f"    ❌ {error}")
+        result = None
     elapsed_ms = (time.perf_counter() - t0) * 1000
     print(f"    Time: {elapsed_ms:.0f}ms")
     print()

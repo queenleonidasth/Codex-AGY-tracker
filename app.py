@@ -8,7 +8,7 @@ import threading
 from typing import Any, Callable, Optional
 
 from app_paths import build_child_command, runtime_dir, settings_path
-from refresh_service import SingleInstanceGuard
+from instance_guard import SingleInstanceGuard
 from settings import Settings
 from state_store import get_store
 from usage_service import RefreshScheduler, get_service

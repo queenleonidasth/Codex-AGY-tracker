@@ -220,6 +220,32 @@ def test_refresh_persists_automatic_codex_usage_and_scanner_index(tmp_path):
     assert state["usage"]["scanner"]["codex"]["version"] == 1
 
 
+def test_first_empty_scan_preserves_migrated_codex_usage(tmp_path):
+    """An empty/missing rollout directory must not erase imported v1/v2 totals."""
+    store = AtomicStateStore(tmp_path / "state.json")
+
+    def seed(state):
+        metrics = {"input": 10, "cached_input": 0, "output": 5, "reasoning_output": 0, "total": 15}
+        state["usage"]["daily"]["2026-08-10"] = {"codex": dict(metrics)}
+        state["usage"]["monthly"]["2026-08"] = {"codex": dict(metrics)}
+        state["usage"]["total"]["codex"] = dict(metrics)
+
+    store.mutate(seed)
+    service = UsageService(
+        store,
+        {"codex": FakeProvider([_snapshot(80)])},
+        scanner=CodexUsageScanner([tmp_path / "empty-codex"], timezone_info=timezone.utc),
+    )
+
+    service.refresh("codex", force=True)
+    state = store.load(force=True)
+
+    assert state["usage"]["daily"]["2026-08-10"]["codex"]["total"] == 15
+    assert state["usage"]["monthly"]["2026-08"]["codex"]["total"] == 15
+    assert state["usage"]["total"]["codex"]["total"] == 15
+    assert state["usage"]["scanner"]["codex_baseline"]["total"]["total"] == 15
+
+
 def test_refresh_scheduler_runs_immediately_and_stops_cleanly():
     """The GUI must own one stoppable refresh loop rather than orphan daemon fetchers."""
     called = threading.Event()
