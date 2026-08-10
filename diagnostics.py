@@ -108,7 +108,7 @@ def collect_diagnostics(settings: Settings, state: dict[str, Any]) -> dict[str, 
     return {
         "application": {
             "name": "AIUsageTracker",
-            "version": "1.0.0",
+            "version": "1.2.0",
             "frozen": is_frozen(),
         },
         "runtime": {

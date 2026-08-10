@@ -4,8 +4,7 @@ $ProjectRoot = [System.IO.Path]::GetFullPath($ProjectRoot)
 Set-Location -LiteralPath $ProjectRoot
 
 $VenvPython = Join-Path $ProjectRoot ".venv\Scripts\python.exe"
-$PyInstaller = Join-Path $ProjectRoot ".venv\Scripts\pyinstaller.exe"
-if (-not (Test-Path -LiteralPath $VenvPython) -or -not (Test-Path -LiteralPath $PyInstaller)) {
+if (-not (Test-Path -LiteralPath $VenvPython)) {
     throw "Development environment is missing. Run .\setup.ps1 first."
 }
 
@@ -27,7 +26,7 @@ foreach ($Target in $Targets) {
     }
 }
 
-& $PyInstaller --noconfirm AIUsageTracker.spec
+& $VenvPython -m PyInstaller --noconfirm AIUsageTracker.spec
 if ($LASTEXITCODE -ne 0) { throw "PyInstaller failed." }
 
 $Executable = Join-Path $ProjectRoot "dist\AIUsageTracker\AIUsageTracker.exe"
