@@ -65,8 +65,7 @@ DT_VCENTER = 0x0004
 DT_LEFT = 0x0000
 DT_NOCLIP = 0x0100
 SWP_NOACTIVATE = 0x0010
-SWP_NOMOVE = 0x0002
-SWP_NOSIZE = 0x0001
+SWP_NOZORDER = 0x0004
 LWA_COLORKEY = 0x00000001
 TPM_RETURNCMD = 0x0100
 MF_STRING = 0x0000
@@ -76,8 +75,6 @@ FW_BOLD = 700
 DEFAULT_CHARSET = 1
 ANTIALIASED_QUALITY = 4
 COLORKEY_RGB = 0x00010101
-HWND_TOPMOST = ctypes.c_void_p(-1)
-
 u32 = ctypes.windll.user32
 g32 = ctypes.windll.gdi32
 k32 = ctypes.windll.kernel32
@@ -263,7 +260,7 @@ def _reposition(hwnd: HWND) -> None:
         height = min(180, max(60, taskbar_height - 150))
         x = bounds.left
         y = bounds.bottom - height - 100
-    u32.SetWindowPos(hwnd, HWND_TOPMOST, x, y, width, height, SWP_NOACTIVATE)
+    u32.SetWindowPos(hwnd, None, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE)
 
 
 def _draw_text(hdc: HDC, text: str, x: int, height: int) -> int:
@@ -368,11 +365,7 @@ def _wnd_proc(hwnd: HWND, message: int, wparam: int, lparam: int) -> int:
             view = build_tracker_view(_runtime.store.load(), _runtime.settings.enabled_providers)
             if view.fingerprint != _runtime.view.fingerprint:
                 _runtime.view = view
-                u32.InvalidateRect(hwnd, None, 1)
-            if _runtime.ticks % 10 == 0:
-                _reposition(hwnd)
-            elif _runtime.ticks % 5 == 0:
-                u32.SetWindowPos(hwnd, HWND_TOPMOST, 0, 0, 0, 0, SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE)
+                u32.InvalidateRect(hwnd, None, 0)
             return 0
         if message == WM_PAINT:
             _paint(hwnd)
@@ -402,9 +395,34 @@ def _wnd_proc(hwnd: HWND, message: int, wparam: int, lparam: int) -> int:
     return u32.DefWindowProcW(hwnd, message, wparam, lparam)
 
 
+def _create_taskbar_popup(
+    instance: HANDLE,
+    class_name: str,
+    owner: HANDLE,
+    width: int,
+) -> HANDLE:
+    return u32.CreateWindowExW(
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+        class_name,
+        "AI Usage Tracker",
+        WS_POPUP | WS_VISIBLE,
+        0,
+        0,
+        width,
+        48,
+        owner,
+        None,
+        instance,
+        None,
+    )
+
+
 def _create_window() -> bool:
     global _wndproc_ref, _background_brush
     if _runtime is None:
+        return False
+    taskbar = u32.FindWindowW("Shell_TrayWnd", None)
+    if not taskbar:
         return False
     instance = k32.GetModuleHandleW(None)
     class_name = "AIUsageTrackerTaskbarV1"
@@ -420,19 +438,11 @@ def _create_window() -> bool:
     window_class.lpszClassName = class_name
     if not u32.RegisterClassExW(ctypes.byref(window_class)):
         return False
-    _runtime.hwnd = u32.CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_TOPMOST | WS_EX_NOACTIVATE | WS_EX_LAYERED,
-        class_name,
-        "AI Usage Tracker",
-        WS_POPUP | WS_VISIBLE,
-        0,
-        0,
-        int(_runtime.settings.display.get("width", 460)),
-        48,
-        None,
-        None,
+    _runtime.hwnd = _create_taskbar_popup(
         instance,
-        None,
+        class_name,
+        taskbar,
+        int(_runtime.settings.display.get("width", 460)),
     )
     if not _runtime.hwnd:
         return False
