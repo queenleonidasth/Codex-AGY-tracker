@@ -14,7 +14,13 @@ from typing import Any, Callable, Optional
 
 from settings import Settings
 from state_store import AtomicStateStore
-from ui_models import TrackerView, build_tracker_view, context_detail_lines
+from ui_models import (
+    TrackerView,
+    build_tracker_view,
+    context_detail_lines,
+    taskbar_overlay_width,
+    taskbar_windows,
+)
 
 
 HANDLE = ctypes.c_void_p
@@ -244,7 +250,10 @@ def _reposition(hwnd: HWND) -> None:
         return
     taskbar_width = bounds.right - bounds.left
     taskbar_height = bounds.bottom - bounds.top
-    width = min(int(_runtime.settings.display.get("width", 460)), max(240, taskbar_width - 300))
+    width = taskbar_overlay_width(
+        int(_runtime.settings.display.get("width", 460)),
+        taskbar_width,
+    )
     if taskbar_width >= taskbar_height:
         height = taskbar_height
         x = max(bounds.left, bounds.right - width - 230)
@@ -300,16 +309,17 @@ def _paint(hwnd: HWND) -> None:
         if provider.indicator:
             g32.SetTextColor(memory_dc, rgb("#FFB454" if provider.status == "stale" else "#FF6B6B"))
             x = _draw_text(memory_dc, provider.indicator, x, height) + 5
-        if not provider.windows:
+        windows = taskbar_windows(provider)
+        if not windows:
             g32.SetTextColor(memory_dc, rgb((170, 178, 195)))
             x = _draw_text(memory_dc, "—", x, height)
-        for window_index, window in enumerate(provider.windows):
+        for window_index, window in enumerate(windows):
             color = "#FF6B6B" if window.severity == "critical" else "#FFB454" if window.severity == "warning" else "#D4D9E5"
             g32.SetTextColor(memory_dc, rgb(color))
             x = _draw_text(memory_dc, f"{window.remaining_percent:.0f}%", x, height)
             g32.SetTextColor(memory_dc, rgb((125, 132, 150)))
             x = _draw_text(memory_dc, window.short_label, x, height) + 5
-            if window_index < len(provider.windows) - 1:
+            if window_index < len(windows) - 1:
                 x = _draw_text(memory_dc, "·", x, height) + 5
         if provider_index < len(providers) - 1:
             g32.SetTextColor(memory_dc, rgb((95, 103, 123)))

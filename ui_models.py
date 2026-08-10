@@ -58,6 +58,11 @@ class TrackerView:
         )
 
 
+def taskbar_overlay_width(configured_width: int, taskbar_width: int) -> int:
+    """Resolve a compact horizontal overlay width within available taskbar space."""
+    return min(configured_width, 400, max(240, taskbar_width - 300))
+
+
 def taskbar_windows(provider: ProviderView) -> tuple[WindowView, ...]:
     """Return only quota windows requested for the native taskbar overlay."""
     by_id = {window.window_id: window for window in provider.windows}

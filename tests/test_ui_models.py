@@ -6,6 +6,7 @@ from ui_models import (
     context_detail_lines,
     format_countdown,
     format_tokens,
+    taskbar_overlay_width,
     taskbar_windows,
 )
 
@@ -121,6 +122,12 @@ def test_taskbar_windows_fall_back_for_codex_without_weekly():
 
     assert [window.window_id for window in taskbar_windows(session)] == ["session"]
     assert [window.window_id for window in taskbar_windows(extra)] == ["monthly"]
+
+
+def test_taskbar_overlay_width_caps_wide_configuration():
+    """A legacy 460 px setting must not expand the compact horizontal overlay."""
+    assert taskbar_overlay_width(configured_width=460, taskbar_width=1920) == 400
+    assert taskbar_overlay_width(configured_width=360, taskbar_width=1920) == 360
 
 
 def test_tracker_view_uses_configured_order_and_token_totals():
