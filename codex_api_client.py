@@ -285,6 +285,13 @@ def _normalize_usage_response(body: dict) -> Optional[dict]:
         if isinstance(secondary_raw, dict):
             weekly_window = secondary_raw
 
+    # Some plans temporarily expose only the weekly window. Keep it as the
+    # primary normalized record while preserving its 10080-minute duration;
+    # consumers classify by duration and therefore render "Weekly", not "5H".
+    if session_window is None and weekly_window is not None:
+        session_window = weekly_window
+        weekly_window = None
+
     # Build primary (session/5h) result
     if session_window is None:
         return None

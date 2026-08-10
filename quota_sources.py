@@ -1,238 +1,372 @@
-"""
-Provider-specific quota source adapters.
-Part of the reliability refactor (commit d2ab9d3 design).
-
-Each adapter reads raw data from its source and returns a ProviderSnapshot.
-No UI, no timer, no persistence. Pure read-and-transform.
-"""
+"""Provider adapters that return one normalized :class:`ProviderSnapshot` shape."""
 
 from __future__ import annotations
 
 import json
 import os
-import time
-from datetime import date, datetime, timedelta, timezone
+import re
+from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Any, Callable, Optional
 
+import agy_api_client
+import codex_api_client
 from quota_models import (
     FetchStatus,
+    ProviderErrorKind,
+    ProviderFetchError,
     ProviderSnapshot,
     QuotaWindow,
 )
 
-# --- Paths ---
+
 HOME = Path.home()
 CODEX_HOME = Path(os.environ.get("CODEX_HOME", HOME / ".codex"))
 AGY_QUOTA_CACHE = HOME / ".tokentracker" / "tracker" / "agy_quota_cache.json"
+DEFAULT_STALE_SECONDS = 300
 
-# Freshness threshold: if cache is older than this, mark as STALE
-AGY_STALE_THRESHOLD_SECONDS = 300  # 5 minutes
+
+def _utc_now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(value: datetime) -> str:
+    return value.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+
+
+def _parse_datetime(value: Any) -> Optional[datetime]:
+    if isinstance(value, (int, float)) and not isinstance(value, bool):
+        try:
+            return datetime.fromtimestamp(float(value), tz=timezone.utc)
+        except (OSError, OverflowError, ValueError):
+            return None
+    if not isinstance(value, str) or not value.strip():
+        return None
+    try:
+        parsed = datetime.fromisoformat(value.strip().replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+def _window_from_used(
+    window_id: str,
+    label: str,
+    used_percent: Any,
+    minutes: Optional[int],
+    reset: Any,
+    now: datetime,
+) -> QuotaWindow:
+    used = max(0.0, min(100.0, float(used_percent or 0)))
+    remaining = 100.0 - used
+    reset_dt = _parse_datetime(reset)
+    reset_text = _iso(reset_dt) if reset_dt else ""
+    reset_seconds = max(0, int((reset_dt - now).total_seconds())) if reset_dt else 0
+    return QuotaWindow(
+        window_type=window_id,
+        remaining_percent=remaining,
+        remaining_fraction=remaining / 100.0,
+        reset_time=reset_text,
+        reset_in_seconds=reset_seconds,
+        label=label,
+        window_minutes=minutes,
+    )
 
 
 class CodexQuotaSource:
-    """
-    Reads Codex rate_limits from session rollout JSONL files.
+    """Prefer the live Codex usage API, falling back to recent rollout events."""
 
-    FIX for Bug #7: Events are selected by timestamp (newest wins),
-    NOT by filename sort order. The old code sorted files by name which
-    doesn't guarantee chronological order across sessions.
-    """
-
-    def __init__(self, codex_home: Optional[Path] = None):
-        self.codex_home = codex_home or CODEX_HOME
+    def __init__(
+        self,
+        codex_home: Optional[Path] = None,
+        fetch_live: Optional[Callable[[], Optional[dict[str, Any]]]] = None,
+        stale_seconds: int = DEFAULT_STALE_SECONDS,
+        now: Callable[[], datetime] = _utc_now,
+    ):
+        self.codex_home = Path(codex_home) if codex_home is not None else CODEX_HOME
+        self.fetch_live = fetch_live or codex_api_client.fetch_codex_live_limits
+        self.stale_seconds = max(0, int(stale_seconds))
+        self.now = now
 
     def fetch(self) -> ProviderSnapshot:
-        """Fetch the most recent Codex rate_limits snapshot."""
-        sessions_root = self.codex_home / "sessions"
-        if not sessions_root.exists():
-            return ProviderSnapshot(
-                provider_name="Codex",
-                status=FetchStatus.UNAVAILABLE,
-                error_message="Codex sessions directory not found",
-            )
-
-        best_result = None
-        best_timestamp = ""
-
-        # Search last 8 days of session directories
-        for days_back in range(8):
-            d = date.today() - timedelta(days=days_back)
-            day_dir = sessions_root / d.strftime("%Y") / d.strftime("%m") / d.strftime("%d")
-
-            if not day_dir.exists():
-                continue
-
-            # Collect ALL rollout files, don't rely on filename sort for recency
-            for f in day_dir.glob("rollout-*.jsonl"):
-                result = self._find_rate_limits_in_file(f)
-                if result and result["timestamp"] > best_timestamp:
-                    best_timestamp = result["timestamp"]
-                    best_result = result
-
-            # If we found something today, no need to look further back
-            if best_result and days_back == 0:
-                break
-
-        if not best_result:
-            return ProviderSnapshot(
-                provider_name="Codex",
-                status=FetchStatus.UNAVAILABLE,
-                error_message="No rate_limits found in recent sessions",
-            )
-
-        return self._build_snapshot(best_result)
-
-    def _find_rate_limits_in_file(self, filepath: Path) -> Optional[dict]:
-        """Extract the newest rate_limits entry from a JSONL file."""
-        last_rl = None
-        last_usage = None
-        last_ts = ""
-
+        fetch_error: Optional[ProviderFetchError] = None
         try:
-            with open(filepath, "r", encoding="utf-8") as f:
-                for line in f:
+            live = self.fetch_live()
+        except ProviderFetchError as error:
+            fetch_error = error
+            live = None
+        except Exception as error:
+            fetch_error = ProviderFetchError(ProviderErrorKind.OTHER, str(error))
+            live = None
+
+        if live:
+            snapshot = self._from_live(live)
+            if snapshot is not None:
+                return snapshot
+
+        fallback = self._latest_session_snapshot()
+        if fallback is not None:
+            return fallback
+
+        if fetch_error is not None:
+            status = (
+                FetchStatus.RATE_LIMITED
+                if fetch_error.kind == ProviderErrorKind.RATE_LIMITED
+                else FetchStatus.UNAVAILABLE
+                if fetch_error.kind in {
+                    ProviderErrorKind.AUTH_REQUIRED,
+                    ProviderErrorKind.NOT_INSTALLED,
+                    ProviderErrorKind.NOT_RUNNING,
+                }
+                else FetchStatus.ERROR
+            )
+            return ProviderSnapshot.failure(
+                "codex", "Codex", status, str(fetch_error), error_kind=fetch_error.kind.value
+            )
+        return ProviderSnapshot.failure(
+            "codex",
+            "Codex",
+            FetchStatus.UNAVAILABLE,
+            "No Codex quota data is available; sign in to Codex and run it once.",
+            error_kind=ProviderErrorKind.AUTH_REQUIRED.value,
+        )
+
+    def _from_live(self, raw: dict[str, Any]) -> Optional[ProviderSnapshot]:
+        normalized = (
+            codex_api_client._normalize_usage_response(raw)
+            if isinstance(raw.get("rate_limit"), dict)
+            else raw
+        )
+        if not isinstance(normalized, dict) or normalized.get("used_percent") is None:
+            return None
+
+        now = self.now().astimezone(timezone.utc)
+        candidates: list[tuple[dict[str, Any], str]] = [(normalized, "primary")]
+        if isinstance(normalized.get("secondary"), dict):
+            candidates.append((normalized["secondary"], "secondary"))
+        windows: dict[str, QuotaWindow] = {}
+        for value, position in candidates:
+            minutes = int(value.get("window_minutes") or (300 if position == "primary" else 10_080))
+            window_id = "weekly" if minutes >= 10_000 else "session"
+            label = "Weekly" if window_id == "weekly" else "5H"
+            windows[window_id] = _window_from_used(
+                window_id,
+                label,
+                value.get("used_percent"),
+                minutes,
+                value.get("resets_at") or value.get("reset_at"),
+                now,
+            )
+        if not windows:
+            return None
+        return ProviderSnapshot(
+            provider_id="codex",
+            provider_name="Codex",
+            windows=windows,
+            status=FetchStatus.OK,
+            source="live_api",
+            observed_at=str(normalized.get("timestamp") or _iso(now)),
+            refreshed_at=_iso(now),
+            plan_type=str(normalized.get("plan_type") or "chatgpt"),
+        )
+
+    def _latest_session_snapshot(self) -> Optional[ProviderSnapshot]:
+        candidates: list[tuple[datetime, dict[str, Any]]] = []
+        for directory_name in ("sessions", "archived_sessions"):
+            directory = self.codex_home / directory_name
+            if not directory.is_dir():
+                continue
+            try:
+                files = directory.rglob("*.jsonl")
+                for path in files:
+                    found = self._latest_in_file(path)
+                    if found is not None:
+                        candidates.append(found)
+            except OSError:
+                continue
+        if not candidates:
+            return None
+
+        event_time, rate_limits = max(candidates, key=lambda item: item[0])
+        now = self.now().astimezone(timezone.utc)
+        status = (
+            FetchStatus.OK
+            if max(0.0, (now - event_time).total_seconds()) <= self.stale_seconds
+            else FetchStatus.STALE
+        )
+        windows: dict[str, QuotaWindow] = {}
+        for position in ("primary", "secondary"):
+            value = rate_limits.get(position)
+            if not isinstance(value, dict) or value.get("used_percent") is None:
+                continue
+            default_minutes = 300 if position == "primary" else 10_080
+            minutes = int(value.get("window_minutes") or default_minutes)
+            window_id = "weekly" if minutes >= 10_000 else "session"
+            windows[window_id] = _window_from_used(
+                window_id,
+                "Weekly" if window_id == "weekly" else "5H",
+                value.get("used_percent"),
+                minutes,
+                value.get("resets_at") or value.get("reset_at"),
+                now,
+            )
+        if not windows:
+            return None
+        return ProviderSnapshot(
+            provider_id="codex",
+            provider_name="Codex",
+            windows=windows,
+            status=status,
+            source="session_log",
+            observed_at=_iso(event_time),
+            refreshed_at=_iso(now),
+            plan_type=str(rate_limits.get("plan_type") or "unknown"),
+            message="Using the latest local Codex session event" if status is FetchStatus.STALE else "",
+        )
+
+    @staticmethod
+    def _latest_in_file(path: Path) -> Optional[tuple[datetime, dict[str, Any]]]:
+        latest: Optional[tuple[datetime, dict[str, Any]]] = None
+        try:
+            with path.open("r", encoding="utf-8", errors="replace") as handle:
+                for line in handle:
                     if "rate_limits" not in line:
-                        continue
-                    line = line.strip()
-                    if not line:
                         continue
                     try:
                         entry = json.loads(line)
                     except json.JSONDecodeError:
                         continue
-
-                    payload = entry.get("payload", {})
-                    rl = payload.get("rate_limits") or payload.get("info", {}).get("rate_limits")
-
-                    if rl and isinstance(rl, dict) and rl.get("primary"):
-                        info = payload.get("info", {})
-                        ts = entry.get("timestamp", "")
-                        # FIX: Compare by timestamp, keep newest
-                        if ts >= last_ts:
-                            last_rl = rl
-                            last_usage = info.get("total_token_usage", {})
-                            last_ts = ts
-        except Exception:
-            pass
-
-        if last_rl:
-            return {
-                "rate_limits": last_rl,
-                "token_usage": last_usage,
-                "timestamp": last_ts,
-                "source_file": filepath.name,
-            }
-        return None
-
-    def _build_snapshot(self, result: dict) -> ProviderSnapshot:
-        """Convert raw rate_limits dict into a ProviderSnapshot."""
-        rl = result["rate_limits"]
-        primary = rl.get("primary", {})
-        used_pct = primary.get("used_percent", 0)
-        remaining_pct = 100.0 - float(used_pct)
-        window_minutes = primary.get("window_minutes", 0)
-        resets_at = primary.get("resets_at", 0)
-
-        # Determine reset time as ISO string
-        reset_time_str = ""
-        if resets_at:
-            try:
-                reset_time_str = datetime.fromtimestamp(resets_at, tz=timezone.utc).isoformat()
-            except (OSError, ValueError):
-                pass
-
-        window = QuotaWindow(
-            window_type="primary",
-            remaining_percent=remaining_pct,
-            remaining_fraction=remaining_pct / 100.0,
-            reset_time=reset_time_str,
-            reset_in_seconds=max(0, int(resets_at - time.time())) if resets_at else 0,
-        )
-
-        return ProviderSnapshot(
-            provider_name="Codex",
-            windows={"primary": window},
-            fetched_at=result["timestamp"] or datetime.now(timezone.utc).isoformat(),
-            status=FetchStatus.OK,
-            plan_type=rl.get("plan_type", "unknown"),
-        )
+                    if not isinstance(entry, dict):
+                        continue
+                    payload = entry.get("payload")
+                    if not isinstance(payload, dict):
+                        continue
+                    info = payload.get("info") if isinstance(payload.get("info"), dict) else {}
+                    rate_limits = payload.get("rate_limits") or info.get("rate_limits")
+                    event_time = _parse_datetime(entry.get("timestamp"))
+                    if isinstance(rate_limits, dict) and event_time is not None:
+                        if latest is None or event_time >= latest[0]:
+                            latest = event_time, rate_limits
+        except OSError:
+            return None
+        return latest
 
 
 class AgyQuotaSource:
-    """
-    Reads AGY quota from the local cache file (agy_quota_cache.json).
+    """Read AGY quota from a running local language server or its last-good cache."""
 
-    FIX for Bug #5: Distinguishes between "file was written" and
-    "quota was confirmed from source" by checking cache mtime.
-    Returns STALE status if cache is older than threshold.
-    """
-
-    def __init__(self, cache_path: Optional[Path] = None, stale_seconds: int = AGY_STALE_THRESHOLD_SECONDS):
-        self.cache_path = cache_path or AGY_QUOTA_CACHE
-        self.stale_seconds = stale_seconds
+    def __init__(
+        self,
+        cache_path: Optional[Path] = None,
+        fetch_live: Optional[Callable[[], Optional[dict[str, Any]]]] = None,
+        stale_seconds: int = DEFAULT_STALE_SECONDS,
+        now: Callable[[], datetime] = _utc_now,
+    ):
+        self.cache_path = Path(cache_path) if cache_path is not None else AGY_QUOTA_CACHE
+        self.fetch_live = fetch_live or agy_api_client.fetch_from_running_agy
+        self.stale_seconds = max(0, int(stale_seconds))
+        self.now = now
 
     def fetch(self) -> ProviderSnapshot:
-        """Read and parse the AGY quota cache."""
-        if not self.cache_path.exists():
-            return ProviderSnapshot(
-                provider_name="AGY",
-                status=FetchStatus.UNAVAILABLE,
-                error_message="AGY quota cache file not found",
-            )
-
-        # Check freshness based on file mtime
         try:
-            mtime = self.cache_path.stat().st_mtime
-            age_seconds = time.time() - mtime
-        except OSError:
-            return ProviderSnapshot(
-                provider_name="AGY",
-                status=FetchStatus.ERROR,
-                error_message="Cannot stat AGY cache file",
-            )
+            live = self.fetch_live()
+        except Exception:
+            live = None
+        if isinstance(live, dict):
+            return self._from_groups(live, FetchStatus.OK, "local_api", self.now())
 
-        # Parse the cache
+        if not self.cache_path.exists():
+            return ProviderSnapshot.failure(
+                "agy",
+                "Antigravity",
+                FetchStatus.UNAVAILABLE,
+                "Antigravity is not running and no quota cache exists.",
+                error_kind=ProviderErrorKind.NOT_RUNNING.value,
+            )
         try:
             raw = json.loads(self.cache_path.read_text(encoding="utf-8"))
-        except (json.JSONDecodeError, OSError) as e:
-            return ProviderSnapshot(
-                provider_name="AGY",
-                status=FetchStatus.ERROR,
-                error_message=f"Failed to parse AGY cache: {e}",
+            modified = datetime.fromtimestamp(self.cache_path.stat().st_mtime, tz=timezone.utc)
+        except (OSError, json.JSONDecodeError):
+            return ProviderSnapshot.failure(
+                "agy",
+                "Antigravity",
+                FetchStatus.ERROR,
+                "The Antigravity quota cache is unreadable.",
+                error_kind=ProviderErrorKind.PARSE.value,
             )
+        now = self.now().astimezone(timezone.utc)
+        age = max(0.0, (now - modified).total_seconds())
+        status = FetchStatus.OK if age <= self.stale_seconds else FetchStatus.STALE
+        return self._from_groups(raw, status, "cache", modified)
 
-        groups = raw.get("groups", {})
-        if not groups:
-            return ProviderSnapshot(
-                provider_name="AGY",
-                status=FetchStatus.ERROR,
-                error_message="AGY cache has no 'groups' data",
+    def _from_groups(
+        self,
+        raw: dict[str, Any],
+        status: FetchStatus,
+        source: str,
+        observed: datetime,
+    ) -> ProviderSnapshot:
+        groups = raw.get("groups")
+        if not isinstance(groups, dict) or not groups:
+            return ProviderSnapshot.failure(
+                "agy",
+                "Antigravity",
+                FetchStatus.ERROR,
+                "Antigravity returned no quota groups.",
+                error_kind=ProviderErrorKind.PARSE.value,
             )
-
-        # Determine status based on age
-        status = FetchStatus.OK if age_seconds < self.stale_seconds else FetchStatus.STALE
-
-        # Build windows from groups
+        now = self.now().astimezone(timezone.utc)
         windows: dict[str, QuotaWindow] = {}
-        for group_name, group_data in groups.items():
-            if not isinstance(group_data, dict):
+        for group_name, group in groups.items():
+            if not isinstance(group, dict):
                 continue
-            windows[group_name] = QuotaWindow(
-                window_type=group_name,
-                remaining_percent=group_data.get("remaining_percent", 100.0),
-                remaining_fraction=group_data.get("remaining_fraction", 1.0),
-                reset_time=group_data.get("reset_time", ""),
-                reset_in_seconds=group_data.get("reset_in_seconds", 0),
+            lower = str(group_name).lower()
+            if "gemini" in lower and ("5h" in lower or "hour" in lower):
+                window_id, label, minutes = "session", "Gemini 5H", 300
+            elif "gemini" in lower and ("week" in lower or "weekly" in lower):
+                window_id, label, minutes = "weekly", "Gemini Weekly", 10_080
+            else:
+                window_id = re.sub(r"[^a-z0-9]+", "_", lower).strip("_") or "quota"
+                label = str(group_name).replace("-", " ").title()
+                minutes = 300 if "5h" in lower or "hour" in lower else 10_080 if "week" in lower else None
+            remaining = group.get("remaining_percent")
+            if remaining is None and group.get("remainingFraction") is not None:
+                remaining = float(group["remainingFraction"]) * 100.0
+            if remaining is None:
+                continue
+            fraction = group.get("remaining_fraction")
+            if fraction is None:
+                fraction = float(remaining) / 100.0
+            reset = group.get("reset_time") or group.get("resetTime") or ""
+            reset_dt = _parse_datetime(reset)
+            reset_seconds = max(0, int((reset_dt - now).total_seconds())) if reset_dt else 0
+            windows[window_id] = QuotaWindow(
+                window_id,
+                float(remaining),
+                float(fraction),
+                _iso(reset_dt) if reset_dt else "",
+                reset_seconds,
+                label=label,
+                window_minutes=minutes,
             )
-
-        # Determine confirmed_at from mtime
-        confirmed_at = datetime.fromtimestamp(mtime, tz=timezone.utc).isoformat()
-
+        if not windows:
+            return ProviderSnapshot.failure(
+                "agy",
+                "Antigravity",
+                FetchStatus.ERROR,
+                "Antigravity quota groups contained no usable windows.",
+                error_kind=ProviderErrorKind.PARSE.value,
+            )
         return ProviderSnapshot(
-            provider_name="AGY",
+            provider_id="agy",
+            provider_name="Antigravity",
             windows=windows,
-            fetched_at=confirmed_at,
             status=status,
-            plan_type=raw.get("plan_tier", "unknown"),
+            source=source,
+            observed_at=_iso(observed),
+            refreshed_at=_iso(now),
+            plan_type=str(raw.get("plan_tier") or "unknown"),
+            message="Using the last Antigravity cache" if status is FetchStatus.STALE else "",
         )
