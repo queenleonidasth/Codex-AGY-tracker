@@ -17,3 +17,6 @@ data/.instance.lock
 .idea/
 *.swp
 *~
+
+# Local isolated development worktrees
+.worktrees/
