@@ -6,6 +6,7 @@ from ui_models import (
     context_detail_lines,
     format_countdown,
     format_tokens,
+    taskbar_windows,
 )
 
 
@@ -81,6 +82,45 @@ def test_window_order_and_colors_are_based_on_remaining_quota():
     assert [window.window_id for window in view.windows] == ["session", "weekly", "code_review"]
     assert [window.severity for window in view.windows] == ["warning", "critical", "normal"]
     assert view.compact_text == "Codex 19.0% 5H · 8.0% W · 75.0% Review"
+
+
+def test_taskbar_windows_select_only_agy_session_and_weekly():
+    """Adding an AGY quota group must not make the native taskbar overflow again."""
+    provider = build_provider_view(
+        _provider(
+            provider_id="agy",
+            display_name="Antigravity",
+            windows={
+                "3p_weekly": _window("3P", 70),
+                "weekly": _window("Weekly", 80),
+                "session": _window("5H", 90),
+            },
+        ),
+        NOW,
+    )
+
+    assert [window.window_id for window in taskbar_windows(provider)] == ["session", "weekly"]
+    assert [window.short_label for window in taskbar_windows(provider)] == ["5H", "W"]
+    assert [window.window_id for window in provider.windows] == ["session", "weekly", "3p_weekly"]
+
+
+def test_taskbar_windows_select_only_codex_weekly():
+    """A Codex session window must not displace its requested weekly taskbar quota."""
+    provider = build_provider_view(
+        _provider(windows={"session": _window("5H", 90), "weekly": _window("Weekly", 80)}),
+        NOW,
+    )
+
+    assert [window.window_id for window in taskbar_windows(provider)] == ["weekly"]
+
+
+def test_taskbar_windows_fall_back_for_codex_without_weekly():
+    """Codex still shows useful quota when older snapshots lack a weekly window."""
+    session = build_provider_view(_provider(windows={"session": _window("5H", 90)}), NOW)
+    extra = build_provider_view(_provider(windows={"monthly": _window("Monthly", 70)}), NOW)
+
+    assert [window.window_id for window in taskbar_windows(session)] == ["session"]
+    assert [window.window_id for window in taskbar_windows(extra)] == ["monthly"]
 
 
 def test_tracker_view_uses_configured_order_and_token_totals():

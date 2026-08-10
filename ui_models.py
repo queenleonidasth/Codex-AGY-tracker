@@ -58,6 +58,23 @@ class TrackerView:
         )
 
 
+def taskbar_windows(provider: ProviderView) -> tuple[WindowView, ...]:
+    """Return only quota windows requested for the native taskbar overlay."""
+    by_id = {window.window_id: window for window in provider.windows}
+    if provider.provider_id == "agy":
+        return tuple(
+            by_id[window_id]
+            for window_id in ("session", "weekly")
+            if window_id in by_id
+        )
+    if provider.provider_id == "codex":
+        for window_id in ("weekly", "session"):
+            if window_id in by_id:
+                return (by_id[window_id],)
+        return provider.windows[:1]
+    return ()
+
+
 def context_detail_lines(view: TrackerView) -> tuple[str, ...]:
     """Readable provider detail lines for compact native context surfaces."""
     if not view.providers:
