@@ -8,6 +8,7 @@ __pycache__/
 data/token_usage.json
 data/config.json
 data/.token_usage.lock
+data/.token_usage.json.lock
 data/.instance.lock
 
 # Logs
