@@ -2,6 +2,7 @@
 __pycache__/
 *.pyc
 *.pyo
+.venv/
 
 # Runtime data (user-specific, regenerated)
 data/token_usage.json
