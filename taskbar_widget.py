@@ -226,6 +226,13 @@ class _Runtime:
     ticks: int = 0
 
 
+@dataclass(frozen=True, slots=True)
+class RenderSegment:
+    text: str
+    color: int
+    gap_after: int = 0
+
+
 _runtime: Optional[_Runtime] = None
 _wndproc_ref: Optional[WNDPROC] = None
 _background_brush: Optional[HANDLE] = None
@@ -236,6 +243,68 @@ def request_close() -> None:
     """Ask the UI thread to close; safe to call from the tray thread."""
     if _runtime is not None and _runtime.hwnd:
         u32.PostMessageW(_runtime.hwnd, WM_CLOSE, 0, 0)
+
+
+def _right_aligned_start(client_width: int, content_width: int) -> int:
+    return max(10, client_width - content_width - 12)
+
+
+def _render_segments(
+    view: TrackerView,
+    provider_styles: dict[str, dict[str, object]],
+) -> tuple[RenderSegment, ...]:
+    if not view.providers:
+        return (RenderSegment("AI Usage — waiting for data", rgb((170, 178, 195))),)
+
+    segments: list[RenderSegment] = []
+    for provider_index, provider in enumerate(view.providers):
+        has_next_provider = provider_index < len(view.providers) - 1
+        style = provider_styles.get(provider.provider_id, {})
+        segments.append(
+            RenderSegment(
+                provider.display_name,
+                rgb(style.get("color", "#6CB6FF")),
+                6,
+            )
+        )
+        if provider.indicator:
+            indicator_color = "#FFB454" if provider.status == "stale" else "#FF6B6B"
+            segments.append(RenderSegment(provider.indicator, rgb(indicator_color), 5))
+
+        windows = taskbar_windows(provider)
+        if not windows:
+            segments.append(
+                RenderSegment(
+                    "—",
+                    rgb((170, 178, 195)),
+                    5 if has_next_provider else 0,
+                )
+            )
+        for window_index, window in enumerate(windows):
+            has_next_window = window_index < len(windows) - 1
+            quota_color = (
+                "#FF6B6B"
+                if window.severity == "critical"
+                else "#FFB454"
+                if window.severity == "warning"
+                else "#D4D9E5"
+            )
+            segments.append(
+                RenderSegment(f"{window.remaining_percent:.0f}%", rgb(quota_color))
+            )
+            label_gap = 5 if has_next_window else 10 if has_next_provider else 0
+            segments.append(
+                RenderSegment(
+                    window.short_label,
+                    rgb((125, 132, 150)),
+                    label_gap,
+                )
+            )
+            if has_next_window:
+                segments.append(RenderSegment("·", rgb((125, 132, 150)), 5))
+        if has_next_provider:
+            segments.append(RenderSegment(" | ", rgb((95, 103, 123)), 8))
+    return tuple(segments)
 
 
 def _reposition(hwnd: HWND) -> None:
@@ -263,12 +332,15 @@ def _reposition(hwnd: HWND) -> None:
     u32.SetWindowPos(hwnd, None, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE)
 
 
-def _draw_text(hdc: HDC, text: str, x: int, height: int) -> int:
-    rectangle = wintypes.RECT(x, 0, x + 600, height)
-    u32.DrawTextW(hdc, text, -1, ctypes.byref(rectangle), DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOCLIP)
+def _measure_text(hdc: HDC, text: str) -> int:
     size = wintypes.SIZE()
     g32.GetTextExtentPoint32W(hdc, text, len(text), ctypes.byref(size))
-    return x + size.cx
+    return size.cx
+
+
+def _draw_text(hdc: HDC, text: str, x: int, height: int) -> None:
+    rectangle = wintypes.RECT(x, 0, x + 600, height)
+    u32.DrawTextW(hdc, text, -1, ctypes.byref(rectangle), DT_SINGLELINE | DT_VCENTER | DT_LEFT | DT_NOCLIP)
 
 
 def _paint(hwnd: HWND) -> None:
@@ -294,33 +366,20 @@ def _paint(hwnd: HWND) -> None:
     )
     old_font = g32.SelectObject(memory_dc, font)
 
-    x = 10
-    providers = _runtime.view.providers
-    if not providers:
-        g32.SetTextColor(memory_dc, rgb((170, 178, 195)))
-        _draw_text(memory_dc, "AI Usage — waiting for data", x, height)
-    for provider_index, provider in enumerate(providers):
-        style = _runtime.settings.provider_styles.get(provider.provider_id, {})
-        g32.SetTextColor(memory_dc, rgb(style.get("color", "#6CB6FF")))
-        x = _draw_text(memory_dc, provider.display_name, x, height) + 6
-        if provider.indicator:
-            g32.SetTextColor(memory_dc, rgb("#FFB454" if provider.status == "stale" else "#FF6B6B"))
-            x = _draw_text(memory_dc, provider.indicator, x, height) + 5
-        windows = taskbar_windows(provider)
-        if not windows:
-            g32.SetTextColor(memory_dc, rgb((170, 178, 195)))
-            x = _draw_text(memory_dc, "—", x, height)
-        for window_index, window in enumerate(windows):
-            color = "#FF6B6B" if window.severity == "critical" else "#FFB454" if window.severity == "warning" else "#D4D9E5"
-            g32.SetTextColor(memory_dc, rgb(color))
-            x = _draw_text(memory_dc, f"{window.remaining_percent:.0f}%", x, height)
-            g32.SetTextColor(memory_dc, rgb((125, 132, 150)))
-            x = _draw_text(memory_dc, window.short_label, x, height) + 5
-            if window_index < len(windows) - 1:
-                x = _draw_text(memory_dc, "·", x, height) + 5
-        if provider_index < len(providers) - 1:
-            g32.SetTextColor(memory_dc, rgb((95, 103, 123)))
-            x = _draw_text(memory_dc, " | ", x + 5, height) + 8
+    segments = _render_segments(_runtime.view, _runtime.settings.provider_styles)
+    measured = tuple(
+        (segment, _measure_text(memory_dc, segment.text))
+        for segment in segments
+    )
+    content_width = sum(
+        text_width + segment.gap_after
+        for segment, text_width in measured
+    )
+    x = _right_aligned_start(width, content_width)
+    for segment, text_width in measured:
+        g32.SetTextColor(memory_dc, segment.color)
+        _draw_text(memory_dc, segment.text, x, height)
+        x += text_width + segment.gap_after
 
     g32.SelectObject(memory_dc, old_font)
     g32.BitBlt(hdc, 0, 0, width, height, memory_dc, 0, 0, 0x00CC0020)
