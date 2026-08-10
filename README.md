@@ -1,48 +1,128 @@
-# 🤖 AI Token Usage Tracker v2 (Antigravity Edition)
+# AI Usage Tracker for Windows
 
-ตัวติดตามการใช้ Token ของ AI บน **Taskbar Windows 11** เวอร์ชันปรับปรุงประสิทธิภาพใหม่ (High-Performance & Refactored Edition)
+แอป Windows 11 สำหรับดู quota ของ **Codex** และ **Antigravity (AGY)** บน taskbar พร้อม system tray, dashboard, การรวม token usage ของ Codex อัตโนมัติ และการแจ้งเตือนเมื่อ quota ต่ำ
 
----
+ข้อมูลอยู่ในเครื่องทั้งหมด ไม่มี telemetry และไม่เก็บ access token ลง state หรือ log
 
-## ⚡ มีอะไรใหม่ใน Version 2?
+## ติดตั้งและเปิดใช้
 
-1. **GDI Font Caching:** ลดการเรียกใช้ Kernel Handle ซ้ำด้วยระบบ Font Handle Cache ในเมโมรี ช่วยลด CPU usage ของกระบวนการวาดลงกว่่า 40%
-2. **Smart Repainting (Dirty Checking):** ใช้การคำนวณ State Fingerprint สั่งวาดหน้าจอใหม่เฉพาะเมื่อข้อมูล Token มีการเปลี่ยนแปลงจริง ช่วยประหยัดทรัพยากรเครื่องช่วง Idle
-3. **mtime File Caching:** ตรวจสอบเวลาแก้ไขไฟล์ (`os.path.getmtime`) ก่อนอ่านและแปลงไฟล์ JSON ลด Disk Read Overhead ถึง 98%
-4. **Single Source of Truth (SSOT):** ยุบคลาสซ้ำซ้อนใน `taskbar_widget.py` แล้วเปลี่ยนมาอิมพอร์ต `token_tracker.tracker` Instance เดียวกันทั่วทั้งโปรเจกต์
-5. **Clean Code & Zero Dead Code:** กำจัดไฟล์สคริปต์สแกนทดสอบเดิม ฟังก์ชันร้าง และ Unused Imports ทั้งหมดออกเรียบร้อย
+เปิด PowerShell ในโฟลเดอร์โปรเจกต์ แล้วรันครั้งเดียว:
 
----
-
-## 📁 โครงสร้างโปรเจกต์ v2
-
-```
-ai_token_widget_v2/
-├── taskbar_widget.py    # ⭐ ตัวหนังสือฝังบน Taskbar (Win32 GDI Caching + Smart Repaint)
-├── token_tracker.py     # Core Data Manager (SSOT + mtime Caching)
-├── auto_fetch.py        # Quota Fetcher (Codex Sessions & AGY Quota Cache)
-├── tray_widget.py       # System Tray Icon + Dashboard Popup
-├── api_interceptor.py   # API Client Wrappers
-├── add_tokens.py        # CLI สำหรับเพิ่มข้อมูลทดสอบ
-├── run_taskbar.bat      # สคริปต์รัน Taskbar Widget
-├── run_widget.bat       # สคริปต์รัน System Tray Widget
-└── requirements.txt     # Dependencies (pystray, Pillow)
+```powershell
+powershell -ExecutionPolicy Bypass -File .\setup.ps1
 ```
 
----
+สคริปต์จะหา/ติดตั้ง Python 3.13 แบบ current-user, สร้าง `.venv`, ติดตั้ง dependency และรัน tests จากนั้นเปิดโปรแกรมด้วย:
 
-## 🚀 วิธีการใช้งาน
-
-```bash
-# 1. รันตัวหนังสือบน Taskbar
-python taskbar_widget.py
-
-# หรือดับเบิลคลิก
-run_taskbar.bat
-
-# 2. เพิ่มข้อมูลทดสอบ
-python add_tokens.py --demo
+```powershell
+.\run.bat
 ```
 
----
-*Developed & Refactored by Antigravity AI*
+`run.bat` จะเลือก executable ที่ build แล้วก่อน หากยังไม่มีจะใช้ `.venv\Scripts\pythonw.exe` จึงไม่เปิดหน้าต่าง console ค้างไว้
+
+## การใช้งาน
+
+- ดับเบิลคลิกข้อความบน taskbar หรือ tray icon เพื่อเปิด dashboard
+- คลิกขวาที่ taskbar/tray เพื่อ Refresh, ดู token summary หรือ Exit
+- Dashboard แสดง quota จริง, เวลาจน reset, source, freshness และยอด token วันนี้/เดือนนี้/ทั้งหมด
+- เปิด `Start with Windows` ใน dashboard เพื่อเพิ่มเฉพาะค่า `AIUsageTracker` ใต้ HKCU; ไม่ต้องใช้สิทธิ์ admin
+- การแจ้งเตือนเริ่มที่ 20%, 10% และ 5% และแจ้งเพียงครั้งเดียวต่อ threshold/reset window
+
+### สัญลักษณ์สถานะ
+
+| สถานะ | เครื่องหมาย | ความหมาย |
+|---|---:|---|
+| `ok` | ไม่มี | ยืนยันข้อมูลจาก source สำเร็จ |
+| `stale` | `~` | แสดงค่าล่าสุดที่ยังมีประโยชน์ แต่ source ยังไม่ยืนยันข้อมูลใหม่ |
+| `error`, `unavailable`, `rate_limited` | `!` | refresh มีปัญหา; ค่าที่เห็นอาจเป็น last-good และจะไม่ถูกปลอมเป็น 100% |
+
+สีเหลืองหมายถึงเหลือไม่เกิน 20% และสีแดงหมายถึงเหลือไม่เกิน 10%
+
+## แหล่งข้อมูลและลำดับความสำคัญ
+
+### Codex
+
+1. quota จาก live usage API โดยใช้ session ที่ Codex CLI มีอยู่แล้วในเครื่อง
+2. หาก live quota ใช้ไม่ได้ จะคง last-good พร้อมสถานะ error/stale
+3. token usage รวมจาก `%USERPROFILE%\.codex\sessions` และ `archived_sessions` โดยอ่าน JSONL แบบ incremental, ตัด event replay ซ้ำ และรองรับทั้ง `last_token_usage` กับ cumulative delta
+
+### Antigravity
+
+1. local API ของ AGY ที่กำลังรันอยู่
+2. cache ล่าสุดของ AGY พร้อมอายุข้อมูล
+3. last-good ของ tracker พร้อมสถานะที่ตรงกับความจริง
+
+Tracker จะ **ไม่เปิด `agy.exe` เอง** จึงไม่สร้าง MCP process หรือ console popup ตามรอบ refresh หาก AGY ไม่ได้รันอยู่ สถานะจะเป็น stale/unavailable ตาม cache ที่มี
+
+## Build เป็น executable
+
+```powershell
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+```
+
+Build gate จะรัน test suite ก่อนสร้าง PyInstaller แบบ `onedir/windowed` ที่:
+
+```text
+dist\AIUsageTracker\AIUsageTracker.exe
+```
+
+ต้องเก็บทั้งโฟลเดอร์ `dist\AIUsageTracker` ไว้ด้วยกัน ไม่ควรคัดลอกเฉพาะไฟล์ `.exe`
+
+## คำสั่งดูแลระบบ
+
+```powershell
+# บังคับ refresh และแสดงสถานะ provider
+.\.venv\Scripts\python.exe .\app.py --refresh
+
+# health report ที่ whitelist field และตัดข้อมูลลับออก
+.\.venv\Scripts\python.exe .\app.py --diagnostics
+
+# เปิด dashboard โดยตรง
+.\.venv\Scripts\pythonw.exe .\app.py --dashboard
+
+# รันชุดทดสอบทั้งหมด
+.\.venv\Scripts\python.exe -m pytest -q
+```
+
+## ตำแหน่งข้อมูล
+
+| โหมด | State/config/log |
+|---|---|
+| รันจาก source | `<project>\data` |
+| รัน executable | `%LOCALAPPDATA%\AIUsageTracker` |
+
+ไฟล์หลักคือ `token_usage.json`, `config.json` และ `logs\app.log` State ใช้ schema v3, file lock ข้าม process และ atomic replace; หาก JSON เสียจะสำรองเป็น `token_usage.json.corrupt-*` ก่อนกู้ค่าเริ่มต้น
+
+## Privacy และความปลอดภัย
+
+- ไม่มี telemetry, cloud sync, browser-cookie extraction หรือ billing estimate
+- ไม่บันทึก access token, refresh token, Authorization header, CSRF token หรือ response body ลง log/diagnostics
+- Codex auth ถูกอ่านเฉพาะเพื่อ request quota ที่ผู้ใช้มี session อยู่แล้ว
+- AGY ติดต่อเฉพาะ local API/process ที่กำลังรันและอ่าน cache ในเครื่อง
+- Diagnostics แสดงเฉพาะ boolean, version, path ที่ย่อชื่อ user, timestamp, source/status และจำนวนไฟล์สแกน
+
+## แก้ปัญหาเบื้องต้น
+
+**Codex ขึ้น `auth_required` หรือ `unavailable`**
+
+เปิด Codex CLI และ sign in ให้สำเร็จ แล้วกด `Refresh now` Token totals จาก session logs ยังทำงานได้แม้ live quota ใช้ไม่ได้
+
+**AGY ขึ้น stale/unavailable**
+
+เปิด Antigravity ตามปกติและตรวจว่า local service ของ AGY รันอยู่ Tracker จะไม่เปิด AGY แทนผู้ใช้
+
+**taskbar ไม่ปรากฏหลัง Explorer restart/เปลี่ยนจอ**
+
+Exit จาก tray แล้วเปิด `run.bat` ใหม่ ตัว widget รองรับ display/DPI/taskbar setting change และคำนวณตำแหน่งใหม่อัตโนมัติ
+
+**ต้องการตรวจสุขภาพโดยไม่เปิด console ค้าง**
+
+เปิด dashboard แล้วกด `Diagnostics` หรือรัน `app.py --diagnostics` จาก PowerShell Log หมุนอัตโนมัติที่ 1 MB จำนวน 3 ไฟล์สำรอง
+
+**ติดตั้งไม่สำเร็จ**
+
+ตรวจว่า `winget` ใช้งานได้ แล้วรัน `setup.ps1` ใหม่ การติดตั้งทั้งหมดเป็น per-user
+
+## ข้อจำกัดที่ตั้งใจไว้
+
+เวอร์ชันนี้รองรับ Windows 11, Codex และ Antigravity เท่านั้น ไม่ดึง billing, ไม่คาดเดา quota ที่ provider ไม่ส่งมา และไม่เปิด provider process เพื่อบังคับ refresh
