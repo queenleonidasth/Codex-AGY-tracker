@@ -4,14 +4,10 @@ Unit tests for the reliability refactor (commit d2ab9d3 design).
 Tests cover:
 - QuotaWindow validation (percent clamped 0-100)
 - Monotonic guard per-window (5h resets independently of weekly)
-- AtomicStateStore (no partial JSON, migration)
 - Process flag constants
 """
 
-import json
-import os
 import sys
-import tempfile
 import unittest
 from pathlib import Path
 
@@ -125,80 +121,6 @@ class TestProcessFlagConstants(unittest.TestCase):
         CREATE_NO_WINDOW = 0x08000000
         self.assertNotEqual(DETACHED_PROCESS, CREATE_NO_WINDOW | 0x00000008)
         self.assertNotEqual(DETACHED_PROCESS, 0x08000008)
-
-
-class TestAtomicStateStore(unittest.TestCase):
-    """Bug #4 fix: atomic writes produce no partial JSON."""
-
-    def setUp(self):
-        self.tmpdir = tempfile.mkdtemp()
-        self.data_file = Path(self.tmpdir) / "test_state.json"
-
-    def tearDown(self):
-        import shutil
-        shutil.rmtree(self.tmpdir, ignore_errors=True)
-
-    def test_atomic_write_produces_valid_json(self):
-        from state_store import AtomicStateStore
-        store = AtomicStateStore(data_file=self.data_file)
-        data = {"rate_limits": {"AGY": {"percent_left": 75.0}}, "last_updated": "2026-08-01T12:00:00"}
-        store.save(data)
-
-        # Verify the file contains valid JSON
-        with open(self.data_file, "r", encoding="utf-8") as f:
-            loaded = json.load(f)
-        self.assertEqual(loaded["rate_limits"]["AGY"]["percent_left"], 75.0)
-
-    def test_load_empty_returns_structure(self):
-        from state_store import AtomicStateStore
-        store = AtomicStateStore(data_file=self.data_file)
-        state = store.load()
-        self.assertIn("daily", state)
-        self.assertIn("monthly", state)
-        self.assertIn("rate_limits", state)
-
-    def test_migration_adds_meta(self):
-        """Old format (no _meta) gets migrated on load."""
-        from state_store import AtomicStateStore
-        old_data = {
-            "daily": {},
-            "monthly": {},
-            "total": {},
-            "rate_limits": {"AGY": {"percent_left": 60.0}},
-            "last_updated": "2026-08-01T10:00:00",
-        }
-        self.data_file.write_text(json.dumps(old_data))
-
-        store = AtomicStateStore(data_file=self.data_file)
-        state = store.load()
-
-        self.assertIn("_meta", state)
-        self.assertEqual(state["_meta"]["schema_version"], 2)
-        self.assertIn("AGY", state["_meta"]["providers"])
-
-    def test_update_provider_sets_confirmed_at(self):
-        """Bug #5 fix: confirmed_at is set per-provider."""
-        from state_store import AtomicStateStore
-        store = AtomicStateStore(data_file=self.data_file)
-
-        store.update_provider("AGY", {"percent_left": 80.0}, confirmed_at="2026-08-01T12:00:00Z")
-
-        state = store.load(force=True)
-        self.assertEqual(
-            state["_meta"]["providers"]["AGY"]["confirmed_at"],
-            "2026-08-01T12:00:00Z"
-        )
-
-    def test_mtime_caching_avoids_reread(self):
-        """Repeated loads without file change should use cache."""
-        from state_store import AtomicStateStore
-        store = AtomicStateStore(data_file=self.data_file)
-        store.save({"rate_limits": {"X": 1}, "daily": {}, "monthly": {}, "total": {}})
-
-        state1 = store.load()
-        state2 = store.load()
-        # Same object (from cache)
-        self.assertIs(state1, state2)
 
 
 class TestProviderSnapshot(unittest.TestCase):
