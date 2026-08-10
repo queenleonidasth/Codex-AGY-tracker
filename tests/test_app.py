@@ -2,6 +2,7 @@ import sys
 
 import app
 from quota_models import FetchStatus, ProviderSnapshot
+from settings import Settings
 
 
 def test_refresh_mode_forces_service_refresh_and_returns_success(capsys):
@@ -61,3 +62,29 @@ def test_launch_mode_uses_current_interpreter_without_shell(monkeypatch):
     assert captured["command"][-1] == "--dashboard"
     assert captured["kwargs"]["shell"] is False
     assert captured["kwargs"]["creationflags"] == app.CREATE_NO_WINDOW
+
+
+def test_diagnostics_mode_prints_redacted_health_report(tmp_path, monkeypatch, capsys):
+    settings = Settings.load(tmp_path / "config.json")
+
+    class Store:
+        def load(self):
+            return {
+                "providers": {
+                    "codex": {
+                        "status": "ok",
+                        "source": "live_api",
+                        "access_token": "must-not-leak",
+                    }
+                }
+            }
+
+    monkeypatch.setattr(app, "get_store", lambda: Store())
+    monkeypatch.setattr(app.Settings, "load", lambda _path: settings)
+
+    result = app.main(["--diagnostics"], service=object())
+    output = capsys.readouterr().out
+
+    assert result == 0
+    assert '"status": "ok"' in output
+    assert "must-not-leak" not in output

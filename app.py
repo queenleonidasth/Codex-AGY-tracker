@@ -34,6 +34,7 @@ def _parser() -> argparse.ArgumentParser:
     modes = parser.add_mutually_exclusive_group()
     modes.add_argument("--dashboard", action="store_true", help="open the full dashboard")
     modes.add_argument("--refresh", action="store_true", help="refresh provider state once")
+    modes.add_argument("--diagnostics", action="store_true", help="print a redacted health report")
     return parser
 
 
@@ -45,6 +46,14 @@ def main(
 ) -> int:
     args = _parser().parse_args(argv)
     active_service = service or get_service()
+
+    if args.diagnostics:
+        from diagnostics import collect_diagnostics, render_diagnostics
+
+        store = get_store()
+        settings = Settings.load(settings_path())
+        print(render_diagnostics(collect_diagnostics(settings, store.load())))
+        return 0
 
     if args.refresh:
         snapshots = active_service.refresh(force=True)
@@ -66,13 +75,16 @@ def main(
 
 
 def _run_default(service: Any) -> int:
+    from diagnostics import configure_logging
     from taskbar_widget import request_close, run_taskbar
     from tray_widget import TokenTrayIcon
 
     settings = Settings.load(settings_path())
     store = get_store()
+    logger = configure_logging()
     guard = SingleInstanceGuard(runtime_dir() / ".instance.lock")
     if not guard.acquire():
+        logger.info("An existing tracker instance is already running")
         return 0
 
     scheduler = RefreshScheduler(service, settings.refresh_interval_seconds)
@@ -93,6 +105,7 @@ def _run_default(service: Any) -> int:
         ).start()
 
     try:
+        logger.info("Starting taskbar, tray, and refresh scheduler")
         scheduler.start()
         tray.start_detached()
         return run_taskbar(
@@ -105,6 +118,7 @@ def _run_default(service: Any) -> int:
         scheduler.stop()
         tray.stop()
         guard.release()
+        logger.info("Tracker stopped")
 
 
 if __name__ == "__main__":

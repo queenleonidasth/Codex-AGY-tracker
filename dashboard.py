@@ -8,7 +8,10 @@ import tkinter as tk
 from tkinter import ttk
 from typing import Any
 
+from app_paths import build_startup_command
+from diagnostics import collect_diagnostics, render_diagnostics
 from settings import Settings
+from startup import is_startup_enabled, set_startup
 from state_store import AtomicStateStore
 from ui_models import TrackerView, build_tracker_view, format_tokens
 
@@ -31,6 +34,7 @@ class Dashboard:
         self.root: tk.Tk | None = None
         self.content: ttk.Frame | None = None
         self.status_var: tk.StringVar | None = None
+        self.startup_var: tk.BooleanVar | None = None
         self._queue: queue.Queue[tuple[str, Any]] = queue.Queue()
         self._refreshing = False
 
@@ -63,12 +67,39 @@ class Dashboard:
         ttk.Label(title_block, text="AI Usage Tracker", style="Title.TLabel").pack(anchor=tk.W)
         self.status_var = tk.StringVar(value="Loading last known data…")
         ttk.Label(title_block, textvariable=self.status_var, style="Subtitle.TLabel").pack(anchor=tk.W, pady=(3, 0))
+        self.startup_var = tk.BooleanVar(value=is_startup_enabled())
+        tk.Checkbutton(
+            title_block,
+            text="Start with Windows",
+            variable=self.startup_var,
+            command=self._toggle_startup,
+            bg=BACKGROUND,
+            fg=MUTED,
+            activebackground=BACKGROUND,
+            activeforeground=TEXT,
+            selectcolor=SURFACE_ALT,
+            font=("Segoe UI", 8),
+            borderwidth=0,
+            highlightthickness=0,
+        ).pack(anchor=tk.W, pady=(4, 0))
+        ttk.Button(
+            header,
+            text="Close",
+            command=root.destroy,
+            style="Refresh.TButton",
+        ).pack(side=tk.RIGHT, padx=(8, 0))
         ttk.Button(
             header,
             text="Refresh now",
             command=lambda: self.request_refresh(force=True),
             style="Refresh.TButton",
         ).pack(side=tk.RIGHT)
+        ttk.Button(
+            header,
+            text="Diagnostics",
+            command=self._show_diagnostics,
+            style="Refresh.TButton",
+        ).pack(side=tk.RIGHT, padx=(0, 8))
 
         canvas = tk.Canvas(outer, bg=BACKGROUND, highlightthickness=0)
         scrollbar = ttk.Scrollbar(outer, orient=tk.VERTICAL, command=canvas.yview)
@@ -87,6 +118,43 @@ class Dashboard:
         root.after(1_000, self._refresh_clock)
         self.request_refresh(force=False)
         root.mainloop()
+
+    def _toggle_startup(self) -> None:
+        if self.startup_var is None:
+            return
+        try:
+            set_startup(self.startup_var.get(), build_startup_command())
+            if self.status_var is not None:
+                self.status_var.set(
+                    "Windows startup enabled" if self.startup_var.get() else "Windows startup disabled"
+                )
+        except OSError as error:
+            self.startup_var.set(not self.startup_var.get())
+            if self.status_var is not None:
+                self.status_var.set(f"Could not change Windows startup: {error}")
+
+    def _show_diagnostics(self) -> None:
+        if self.root is None:
+            return
+        window = tk.Toplevel(self.root)
+        window.title("AI Usage Tracker diagnostics")
+        window.geometry("720x520")
+        window.configure(bg=BACKGROUND)
+        text = tk.Text(
+            window,
+            bg=SURFACE,
+            fg=TEXT,
+            insertbackground=TEXT,
+            font=("Cascadia Mono", 9),
+            relief=tk.FLAT,
+            padx=12,
+            pady=12,
+            wrap=tk.NONE,
+        )
+        text.pack(fill=tk.BOTH, expand=True, padx=12, pady=12)
+        report = collect_diagnostics(self.settings, self.store.load())
+        text.insert("1.0", render_diagnostics(report))
+        text.configure(state=tk.DISABLED)
 
     def request_refresh(self, force: bool = True) -> None:
         if self._refreshing:

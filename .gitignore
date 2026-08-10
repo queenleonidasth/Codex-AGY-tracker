@@ -3,6 +3,8 @@ __pycache__/
 *.pyc
 *.pyo
 .venv/
+build/
+dist/
 
 # Runtime data (user-specific, regenerated)
 data/token_usage.json
@@ -10,6 +12,7 @@ data/config.json
 data/.token_usage.lock
 data/.token_usage.json.lock
 data/.instance.lock
+data/logs/
 
 # Logs
 *.log

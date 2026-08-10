@@ -1,2 +1,2 @@
 @echo off
-start "" pythonw "%~dp0tray_widget.py"
+call "%~dp0run.bat" %*

@@ -11,7 +11,8 @@ from pystray import MenuItem as item
 
 from settings import Settings
 from state_store import AtomicStateStore
-from ui_models import build_tracker_view, format_tokens
+from notifications import NotificationPolicy
+from ui_models import TrackerView, build_tracker_view, format_tokens
 
 
 class TokenTrayIcon:
@@ -31,9 +32,10 @@ class TokenTrayIcon:
         self.icon: Optional[pystray.Icon] = None
         self._stop = threading.Event()
         self._monitor: Optional[threading.Thread] = None
+        self._notifications = NotificationPolicy(settings.notification_thresholds)
 
-    def _create_image(self) -> Image.Image:
-        view = build_tracker_view(self.store.load(), self.settings.enabled_providers)
+    def _create_image(self, view: Optional[TrackerView] = None) -> Image.Image:
+        view = view or build_tracker_view(self.store.load(), self.settings.enabled_providers)
         remaining = [window.remaining_percent for provider in view.providers for window in provider.windows]
         lowest = min(remaining) if remaining else 0
         ring = "#FF6B6B" if remaining and lowest <= 10 else "#FFB454" if remaining and lowest <= 20 else "#6CB6FF"
@@ -81,14 +83,22 @@ class TokenTrayIcon:
 
     def _monitor_state(self) -> None:
         last_fingerprint = None
-        while not self._stop.wait(5.0):
-            view = build_tracker_view(self.store.load(), self.settings.enabled_providers)
-            if view.fingerprint == last_fingerprint:
-                continue
-            last_fingerprint = view.fingerprint
-            if self.icon is not None:
-                self.icon.icon = self._create_image()
-                self.icon.title = view.compact_text[:127] or "AI Usage Tracker"
+        while not self._stop.is_set():
+            state = self.store.load()
+            view = build_tracker_view(state, self.settings.enabled_providers)
+            if view.fingerprint != last_fingerprint:
+                last_fingerprint = view.fingerprint
+                events = self._notifications.claim(
+                    self.store,
+                    state.get("providers", {}) if isinstance(state.get("providers"), dict) else {},
+                )
+                if self.icon is not None:
+                    self.icon.icon = self._create_image(view)
+                    self.icon.title = view.compact_text[:127] or "AI Usage Tracker"
+                    for event in events:
+                        self.icon.notify(event.message, event.title)
+            if self._stop.wait(5.0):
+                break
 
     def _refresh(self, _icon=None, _item=None) -> None:
         threading.Thread(

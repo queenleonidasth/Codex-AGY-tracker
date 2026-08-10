@@ -54,3 +54,15 @@ def build_child_command(*arguments: str) -> list[str]:
     if is_frozen():
         return [sys.executable, *arguments]
     return [sys.executable, str(SOURCE_ROOT / "app.py"), *arguments]
+
+
+def build_startup_command() -> list[str]:
+    """Prefer pythonw in source mode so Windows startup remains windowless."""
+    if is_frozen():
+        return [sys.executable]
+    executable = Path(sys.executable)
+    if executable.name.lower() == "python.exe":
+        pythonw = executable.with_name("pythonw.exe")
+        if pythonw.exists():
+            executable = pythonw
+    return [str(executable), str(SOURCE_ROOT / "app.py")]
