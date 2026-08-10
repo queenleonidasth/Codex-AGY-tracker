@@ -12,6 +12,7 @@ from quota_models import (
     QuotaWindow,
 )
 from state_store import AtomicStateStore
+from token_tracker import TokenTracker
 from usage_service import RefreshScheduler, UsageService
 
 
@@ -244,6 +245,92 @@ def test_first_empty_scan_preserves_migrated_codex_usage(tmp_path):
     assert state["usage"]["monthly"]["2026-08"]["codex"]["total"] == 15
     assert state["usage"]["total"]["codex"]["total"] == 15
     assert state["usage"]["scanner"]["codex_baseline"]["total"]["total"] == 15
+
+
+def test_first_nonempty_scan_uses_migrated_usage_as_floor_not_addition(tmp_path):
+    """Historical rollouts normally overlap migrated totals and must not double count."""
+    codex_home = tmp_path / "codex"
+    rollout = codex_home / "sessions" / "rollout.jsonl"
+    rollout.parent.mkdir(parents=True)
+    rollout.write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-08-10T01:00:00Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "last_token_usage": {
+                            "input_tokens": 100,
+                            "cached_input_tokens": 20,
+                            "output_tokens": 25,
+                            "reasoning_output_tokens": 5,
+                            "total_tokens": 125,
+                        }
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    store = AtomicStateStore(tmp_path / "state.json")
+    store.mutate(
+        lambda state: state["usage"]["total"].__setitem__(
+            "codex", {"input": 10, "output": 5, "total": 15}
+        )
+    )
+    service = UsageService(
+        store,
+        {"codex": FakeProvider([_snapshot(80)])},
+        scanner=CodexUsageScanner([codex_home], timezone_info=timezone.utc),
+    )
+
+    service.refresh("codex", force=True)
+
+    assert store.load(force=True)["usage"]["total"]["codex"]["total"] == 125
+
+
+def test_manual_codex_addition_remains_additive_across_rescans(tmp_path):
+    codex_home = tmp_path / "codex"
+    rollout = codex_home / "sessions" / "rollout.jsonl"
+    rollout.parent.mkdir(parents=True)
+    rollout.write_text(
+        json.dumps(
+            {
+                "timestamp": "2026-08-10T01:00:00Z",
+                "type": "event_msg",
+                "payload": {
+                    "type": "token_count",
+                    "info": {
+                        "last_token_usage": {
+                            "input_tokens": 100,
+                            "output_tokens": 25,
+                            "total_tokens": 125,
+                        }
+                    },
+                },
+            }
+        )
+        + "\n",
+        encoding="utf-8",
+    )
+    store = AtomicStateStore(tmp_path / "state.json")
+    service = UsageService(
+        store,
+        {"codex": FakeProvider([_snapshot(80)])},
+        scanner=CodexUsageScanner([codex_home], timezone_info=timezone.utc),
+    )
+    service.refresh("codex", force=True)
+    TokenTracker(store=store).add_usage("codex", input_tokens=10, output_tokens=5)
+
+    service.refresh("codex", force=True)
+    first = store.load(force=True)["usage"]["total"]["codex"]["total"]
+    service.refresh("codex", force=True)
+    second = store.load(force=True)["usage"]["total"]["codex"]["total"]
+
+    assert first == 140
+    assert second == 140
 
 
 def test_refresh_scheduler_runs_immediately_and_stops_cleanly():

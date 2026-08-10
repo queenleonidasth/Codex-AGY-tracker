@@ -3,6 +3,7 @@ import os
 from datetime import datetime, timedelta, timezone
 
 from quota_models import FetchStatus
+from quota_models import ProviderErrorKind, ProviderFetchError
 from quota_sources import AgyQuotaSource, CodexQuotaSource
 
 
@@ -96,6 +97,40 @@ def test_codex_without_live_or_session_data_is_unavailable_not_full(tmp_path):
     assert snapshot.status is FetchStatus.UNAVAILABLE
     assert snapshot.windows == {}
     assert "No Codex quota data" in snapshot.message
+
+
+def test_codex_rate_limit_keeps_failure_status_with_session_fallback_values(tmp_path):
+    """Fallback values are useful, but must not hide the live 429 cache policy."""
+    day = tmp_path / "sessions" / "2026" / "08" / "10"
+    day.mkdir(parents=True)
+    event = {
+        "timestamp": "2026-08-10T09:30:00Z",
+        "type": "event_msg",
+        "payload": {
+            "rate_limits": {
+                "primary": {
+                    "used_percent": 35,
+                    "window_minutes": 300,
+                    "resets_at": 1_786_350_000,
+                }
+            }
+        },
+    }
+    (day / "rollout.jsonl").write_text(json.dumps(event) + "\n", encoding="utf-8")
+
+    def rate_limited():
+        raise ProviderFetchError(ProviderErrorKind.RATE_LIMITED, "Too many requests")
+
+    snapshot = CodexQuotaSource(
+        fetch_live=rate_limited,
+        codex_home=tmp_path,
+        now=lambda: NOW,
+    ).fetch()
+
+    assert snapshot.status is FetchStatus.RATE_LIMITED
+    assert snapshot.windows["session"].remaining_percent == 65
+    assert snapshot.source == "session_log"
+    assert snapshot.error_kind == ProviderErrorKind.RATE_LIMITED.value
 
 
 def test_codex_weekly_only_response_does_not_invent_a_session_window(tmp_path):

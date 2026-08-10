@@ -108,22 +108,28 @@ class CodexQuotaSource:
 
         fallback = self._latest_session_snapshot()
         if fallback is not None:
+            if fetch_error is not None:
+                return ProviderSnapshot(
+                    provider_id="codex",
+                    provider_name="Codex",
+                    windows=fallback.windows,
+                    status=self._status_for_error(fetch_error),
+                    source=fallback.source,
+                    observed_at=fallback.observed_at,
+                    refreshed_at=_iso(self.now()),
+                    plan_type=fallback.plan_type,
+                    message=f"{fetch_error}; using the latest local Codex session event",
+                    error_kind=fetch_error.kind.value,
+                )
             return fallback
 
         if fetch_error is not None:
-            status = (
-                FetchStatus.RATE_LIMITED
-                if fetch_error.kind == ProviderErrorKind.RATE_LIMITED
-                else FetchStatus.UNAVAILABLE
-                if fetch_error.kind in {
-                    ProviderErrorKind.AUTH_REQUIRED,
-                    ProviderErrorKind.NOT_INSTALLED,
-                    ProviderErrorKind.NOT_RUNNING,
-                }
-                else FetchStatus.ERROR
-            )
             return ProviderSnapshot.failure(
-                "codex", "Codex", status, str(fetch_error), error_kind=fetch_error.kind.value
+                "codex",
+                "Codex",
+                self._status_for_error(fetch_error),
+                str(fetch_error),
+                error_kind=fetch_error.kind.value,
             )
         return ProviderSnapshot.failure(
             "codex",
@@ -132,6 +138,18 @@ class CodexQuotaSource:
             "No Codex quota data is available; sign in to Codex and run it once.",
             error_kind=ProviderErrorKind.AUTH_REQUIRED.value,
         )
+
+    @staticmethod
+    def _status_for_error(error: ProviderFetchError) -> FetchStatus:
+        if error.kind == ProviderErrorKind.RATE_LIMITED:
+            return FetchStatus.RATE_LIMITED
+        if error.kind in {
+            ProviderErrorKind.AUTH_REQUIRED,
+            ProviderErrorKind.NOT_INSTALLED,
+            ProviderErrorKind.NOT_RUNNING,
+        }:
+            return FetchStatus.UNAVAILABLE
+        return FetchStatus.ERROR
 
     def _from_live(self, raw: dict[str, Any]) -> Optional[ProviderSnapshot]:
         normalized = (

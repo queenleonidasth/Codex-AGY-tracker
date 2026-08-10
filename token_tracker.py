@@ -67,6 +67,29 @@ class TokenTracker:
             lifetime["output"] += output_tokens
             lifetime["total"] += total
 
+            if provider_id == "codex":
+                adjustment = usage["scanner"].setdefault(
+                    "codex_adjustment",
+                    {"daily": {}, "monthly": {}, "total": {}},
+                )
+                if not isinstance(adjustment, dict):
+                    adjustment = {"daily": {}, "monthly": {}, "total": {}}
+                    usage["scanner"]["codex_adjustment"] = adjustment
+                for key in ("daily", "monthly", "total"):
+                    if not isinstance(adjustment.get(key), dict):
+                        adjustment[key] = {}
+                for bucket_name, period in (("daily", today), ("monthly", month)):
+                    record = adjustment[bucket_name].setdefault(
+                        period, {"input": 0, "output": 0, "total": 0}
+                    )
+                    record["input"] += input_tokens
+                    record["output"] += output_tokens
+                    record["total"] += total
+                adjusted_total = adjustment["total"]
+                adjusted_total["input"] = adjusted_total.get("input", 0) + input_tokens
+                adjusted_total["output"] = adjusted_total.get("output", 0) + output_tokens
+                adjusted_total["total"] = adjusted_total.get("total", 0) + total
+
         state = self.store.mutate(add)
         self.usage = state["usage"]
 

@@ -48,6 +48,16 @@ def _add_token_metrics(first: Any, second: Any) -> dict[str, int]:
     return {key: left[key] + right[key] for key in TOKEN_METRICS}
 
 
+def _max_token_metrics(first: Any, second: Any) -> dict[str, int]:
+    left, right = _token_metrics(first), _token_metrics(second)
+    return {key: max(left[key], right[key]) for key in TOKEN_METRICS}
+
+
+def _subtract_token_metrics(first: Any, second: Any) -> dict[str, int]:
+    left, right = _token_metrics(first), _token_metrics(second)
+    return {key: max(0, left[key] - right[key]) for key in TOKEN_METRICS}
+
+
 class UsageService:
     def __init__(
         self,
@@ -198,6 +208,13 @@ class UsageService:
         def update(current: dict[str, Any]) -> None:
             usage = current["usage"]
             scanner_state = usage["scanner"]
+            adjustment = scanner_state.get("codex_adjustment")
+            if not isinstance(adjustment, dict):
+                adjustment = {"daily": {}, "monthly": {}, "total": {}}
+                scanner_state["codex_adjustment"] = adjustment
+            for key in ("daily", "monthly", "total"):
+                if not isinstance(adjustment.get(key), dict):
+                    adjustment[key] = {}
             baseline = scanner_state.get("codex_baseline")
             if not isinstance(baseline, dict):
                 # A v3 scanner index means current Codex metrics already came from
@@ -210,13 +227,22 @@ class UsageService:
                 baseline = {"daily": {}, "monthly": {}, "total": {}}
                 if not already_scanned:
                     for period_name in ("daily", "monthly"):
+                        adjustment_periods = (
+                            adjustment.get(period_name)
+                            if isinstance(adjustment.get(period_name), dict)
+                            else {}
+                        )
                         baseline[period_name] = {
-                            period: _token_metrics(providers.get("codex"))
+                            period: _subtract_token_metrics(
+                                providers.get("codex"), adjustment_periods.get(period)
+                            )
                             for period, providers in usage[period_name].items()
                             if isinstance(providers, dict)
                             and isinstance(providers.get("codex"), dict)
                         }
-                    baseline["total"] = _token_metrics(usage["total"].get("codex"))
+                    baseline["total"] = _subtract_token_metrics(
+                        usage["total"].get("codex"), adjustment.get("total")
+                    )
                 scanner_state["codex_baseline"] = copy.deepcopy(baseline)
 
             for period_name in ("daily", "monthly"):
@@ -229,12 +255,21 @@ class UsageService:
                     if isinstance(baseline.get(period_name), dict)
                     else {}
                 )
-                for period in set(source) | set(baseline_periods):
+                adjustment_periods = (
+                    adjustment.get(period_name)
+                    if isinstance(adjustment.get(period_name), dict)
+                    else {}
+                )
+                for period in set(source) | set(baseline_periods) | set(adjustment_periods):
                     usage[period_name].setdefault(period, {})["codex"] = _add_token_metrics(
-                        baseline_periods.get(period), source.get(period)
+                        _max_token_metrics(
+                            baseline_periods.get(period), source.get(period)
+                        ),
+                        adjustment_periods.get(period),
                     )
             usage["total"]["codex"] = _add_token_metrics(
-                baseline.get("total"), result.total
+                _max_token_metrics(baseline.get("total"), result.total),
+                adjustment.get("total"),
             )
             scanner_state["codex"] = copy.deepcopy(result.index)
             scanner_state["codex_diagnostics"] = {
