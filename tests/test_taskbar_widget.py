@@ -1,5 +1,7 @@
 from types import SimpleNamespace
 
+import pytest
+
 import taskbar_widget as widget
 from ui_models import ProviderView, TrackerView, WindowView
 
@@ -19,7 +21,7 @@ def _runtime(view: TrackerView, ticks: int = 0) -> SimpleNamespace:
         store=SimpleNamespace(load=lambda: {}),
         settings=SimpleNamespace(enabled_providers=("agy", "codex")),
         last_position=None,
-        fullscreen_hidden=False,
+        overlay_hidden=False,
     )
 
 
@@ -43,6 +45,14 @@ def _monitor_info_reader(bounds_by_monitor):
             info.rcMonitor.bottom,
         ) = bounds
         return 1
+
+    return read
+
+
+def _class_name_reader(class_name):
+    def read(_hwnd, buffer, _length):
+        buffer.value = class_name
+        return len(class_name)
 
     return read
 
@@ -148,6 +158,7 @@ def test_foreground_fullscreen_on_taskbar_monitor_is_detected(monkeypatch):
             FindWindowW=lambda *_: 300,
             IsWindowVisible=lambda _h: 1,
             IsIconic=lambda _h: 0,
+            GetClassNameW=_class_name_reader("GameWindow"),
             MonitorFromWindow=lambda _h, _flags: 10,
             GetMonitorInfoW=_monitor_info_reader({10: (0, 0, 1920, 1080)}),
             GetWindowRect=_rect_reader((0, 0, 1920, 1080)),
@@ -172,6 +183,7 @@ def test_foreground_fullscreen_on_other_monitor_is_ignored(monkeypatch):
             FindWindowW=lambda *_: 300,
             IsWindowVisible=lambda _h: 1,
             IsIconic=lambda _h: 0,
+            GetClassNameW=_class_name_reader("GameWindow"),
             MonitorFromWindow=lambda h, _flags: 10 if h == 200 else 20,
             GetMonitorInfoW=_monitor_info_reader(
                 {10: (1920, 0, 3840, 1080), 20: (0, 0, 1920, 1080)}
@@ -193,6 +205,32 @@ def test_missing_foreground_window_preserves_visibility_state(monkeypatch):
     assert widget._foreground_fullscreen_on_taskbar_monitor(100) is None
 
 
+@pytest.mark.parametrize("class_name", ["Progman", "WorkerW"])
+def test_desktop_shell_never_counts_as_fullscreen(monkeypatch, class_name):
+    """Clicking the desktop must not be mistaken for a fullscreen application."""
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            GetForegroundWindow=lambda: 200,
+            FindWindowW=lambda *_: 300,
+            IsWindowVisible=lambda _h: 1,
+            IsIconic=lambda _h: 0,
+            GetClassNameW=_class_name_reader(class_name),
+            MonitorFromWindow=lambda _h, _flags: 10,
+            GetMonitorInfoW=_monitor_info_reader({10: (0, 0, 1920, 1080)}),
+            GetWindowRect=_rect_reader((0, 0, 1920, 1080)),
+        ),
+    )
+    monkeypatch.setattr(
+        widget,
+        "dwmapi",
+        SimpleNamespace(DwmGetWindowAttribute=lambda *_: -1),
+    )
+
+    assert widget._foreground_fullscreen_on_taskbar_monitor(100) is False
+
+
 def test_entering_fullscreen_hides_once(monkeypatch):
     """Repeated fullscreen timer ticks must issue only one hide transition."""
     runtime = _runtime(_view("test"))
@@ -206,20 +244,24 @@ def test_entering_fullscreen_hides_once(monkeypatch):
     monkeypatch.setattr(
         widget,
         "u32",
-        SimpleNamespace(ShowWindow=lambda *args: show_calls.append(args)),
+        SimpleNamespace(
+            FindWindowW=lambda *_: 300,
+            IsWindowVisible=lambda _h: 1,
+            ShowWindow=lambda *args: show_calls.append(args),
+        ),
     )
 
-    widget._sync_fullscreen_visibility(100)
-    widget._sync_fullscreen_visibility(100)
+    widget._sync_overlay_visibility(100)
+    widget._sync_overlay_visibility(100)
 
     assert show_calls == [(100, widget.SW_HIDE)]
-    assert runtime.fullscreen_hidden is True
+    assert runtime.overlay_hidden is True
 
 
 def test_leaving_fullscreen_repositions_and_shows_without_activation(monkeypatch):
     """Returning from fullscreen must restore position without stealing focus."""
     runtime = _runtime(_view("test"))
-    runtime.fullscreen_hidden = True
+    runtime.overlay_hidden = True
     calls = []
     monkeypatch.setattr(widget, "_runtime", runtime)
     monkeypatch.setattr(
@@ -236,23 +278,25 @@ def test_leaving_fullscreen_repositions_and_shows_without_activation(monkeypatch
         widget,
         "u32",
         SimpleNamespace(
+            FindWindowW=lambda *_: 300,
+            IsWindowVisible=lambda _h: 1,
             ShowWindow=lambda hwnd, mode: calls.append(("show", hwnd, mode))
         ),
     )
 
-    widget._sync_fullscreen_visibility(100)
+    widget._sync_overlay_visibility(100)
 
     assert calls == [
         ("position", 100),
         ("show", 100, widget.SW_SHOWNOACTIVATE),
     ]
-    assert runtime.fullscreen_hidden is False
+    assert runtime.overlay_hidden is False
 
 
 def test_uncertain_fullscreen_detection_keeps_last_visibility(monkeypatch):
     """A transient Win32 read failure must not flicker a hidden overlay visible."""
     runtime = _runtime(_view("test"))
-    runtime.fullscreen_hidden = True
+    runtime.overlay_hidden = True
     show_calls = []
     monkeypatch.setattr(widget, "_runtime", runtime)
     monkeypatch.setattr(
@@ -263,13 +307,83 @@ def test_uncertain_fullscreen_detection_keeps_last_visibility(monkeypatch):
     monkeypatch.setattr(
         widget,
         "u32",
-        SimpleNamespace(ShowWindow=lambda *args: show_calls.append(args)),
+        SimpleNamespace(
+            FindWindowW=lambda *_: 300,
+            IsWindowVisible=lambda _h: 1,
+            ShowWindow=lambda *args: show_calls.append(args),
+        ),
     )
 
-    widget._sync_fullscreen_visibility(100)
+    widget._sync_overlay_visibility(100)
 
     assert show_calls == []
-    assert runtime.fullscreen_hidden is True
+    assert runtime.overlay_hidden is True
+
+
+@pytest.mark.parametrize(
+    ("taskbar_handle", "taskbar_visible"),
+    [(0, 0), (300, 0)],
+)
+def test_unavailable_taskbar_hides_overlay_once(
+    monkeypatch,
+    taskbar_handle,
+    taskbar_visible,
+):
+    """The standalone overlay must hide while its taskbar sensor is unavailable."""
+    runtime = _runtime(_view("test"))
+    runtime.overlay_hidden = False
+    show_calls = []
+    monkeypatch.setattr(widget, "_runtime", runtime)
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            FindWindowW=lambda *_: taskbar_handle,
+            IsWindowVisible=lambda _h: taskbar_visible,
+            ShowWindow=lambda *args: show_calls.append(args),
+        ),
+    )
+
+    widget._sync_overlay_visibility(100)
+    widget._sync_overlay_visibility(100)
+
+    assert show_calls == [(100, widget.SW_HIDE)]
+    assert runtime.overlay_hidden is True
+
+
+def test_visible_taskbar_restores_overlay_without_activation(monkeypatch):
+    """A restored taskbar must reposition and show the overlay without taking focus."""
+    runtime = _runtime(_view("test"))
+    runtime.overlay_hidden = True
+    calls = []
+    monkeypatch.setattr(widget, "_runtime", runtime)
+    monkeypatch.setattr(
+        widget,
+        "_foreground_fullscreen_on_taskbar_monitor",
+        lambda _h: False,
+    )
+    monkeypatch.setattr(
+        widget,
+        "_reposition",
+        lambda hwnd: calls.append(("position", hwnd)) or True,
+    )
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            FindWindowW=lambda *_: 300,
+            IsWindowVisible=lambda _h: 1,
+            ShowWindow=lambda hwnd, mode: calls.append(("show", hwnd, mode)),
+        ),
+    )
+
+    widget._sync_overlay_visibility(100)
+
+    assert calls == [
+        ("position", 100),
+        ("show", 100, widget.SW_SHOWNOACTIVATE),
+    ]
+    assert runtime.overlay_hidden is False
 
 
 def test_render_segments_preserve_compact_provider_text_order():
@@ -328,7 +442,7 @@ def test_timer_never_repositions_or_changes_z_order(monkeypatch):
     monkeypatch.setattr(widget, "_reposition", lambda hwnd: reposition_calls.append(hwnd))
     monkeypatch.setattr(
         widget,
-        "_sync_fullscreen_visibility",
+        "_sync_overlay_visibility",
         lambda hwnd: visibility_syncs.append(hwnd),
     )
     monkeypatch.setattr(
@@ -353,7 +467,7 @@ def test_changed_view_invalidates_without_background_erase(monkeypatch):
     invalidate_calls = []
     monkeypatch.setattr(widget, "_runtime", _runtime(current))
     monkeypatch.setattr(widget, "build_tracker_view", lambda *_: changed)
-    monkeypatch.setattr(widget, "_sync_fullscreen_visibility", lambda _hwnd: None)
+    monkeypatch.setattr(widget, "_sync_overlay_visibility", lambda _hwnd: None)
     monkeypatch.setattr(
         widget,
         "u32",

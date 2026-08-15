@@ -90,6 +90,8 @@ u32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
 u32.FindWindowW.restype = HANDLE
 u32.GetWindowRect.argtypes = [HANDLE, ctypes.POINTER(wintypes.RECT)]
 u32.GetWindowRect.restype = BOOL
+u32.GetClassNameW.argtypes = [HANDLE, ctypes.POINTER(ctypes.c_wchar), INT]
+u32.GetClassNameW.restype = INT
 u32.GetClientRect.argtypes = [HANDLE, ctypes.POINTER(wintypes.RECT)]
 u32.GetClientRect.restype = BOOL
 u32.RegisterClassExW.argtypes = [ctypes.c_void_p]
@@ -261,7 +263,7 @@ class _Runtime:
     hwnd: Optional[HWND] = None
     ticks: int = 0
     last_position: Optional[tuple[int, int, int, int]] = None
-    fullscreen_hidden: bool = False
+    overlay_hidden: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -280,6 +282,7 @@ _font_cache = FontCache()
 ERROR_CLASS_ALREADY_EXISTS = 1410
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
 MONITOR_DEFAULTTONULL = 0
+DESKTOP_SHELL_CLASSES = frozenset({"Progman", "WorkerW"})
 
 
 def request_close() -> None:
@@ -422,6 +425,17 @@ def _monitor_for_window(
     return monitor, (bounds.left, bounds.top, bounds.right, bounds.bottom)
 
 
+def _window_class_name(hwnd: HWND) -> str:
+    class_name = ctypes.create_unicode_buffer(256)
+    if not u32.GetClassNameW(hwnd, class_name, len(class_name)):
+        return ""
+    return class_name.value
+
+
+def _is_desktop_shell_window(hwnd: HWND) -> bool:
+    return _window_class_name(hwnd) in DESKTOP_SHELL_CLASSES
+
+
 def _foreground_fullscreen_on_taskbar_monitor(
     overlay_hwnd: HWND,
 ) -> Optional[bool]:
@@ -432,6 +446,8 @@ def _foreground_fullscreen_on_taskbar_monitor(
     if not taskbar:
         return None
     if foreground == overlay_hwnd or foreground == taskbar:
+        return False
+    if _is_desktop_shell_window(foreground):
         return False
     if not u32.IsWindowVisible(foreground) or u32.IsIconic(foreground):
         return False
@@ -447,19 +463,28 @@ def _foreground_fullscreen_on_taskbar_monitor(
     return _rect_covers_monitor(foreground_bounds, foreground_monitor[1])
 
 
-def _sync_fullscreen_visibility(hwnd: HWND) -> None:
+def _taskbar_visible() -> bool:
+    taskbar = u32.FindWindowW("Shell_TrayWnd", None)
+    return bool(taskbar and u32.IsWindowVisible(taskbar))
+
+
+def _sync_overlay_visibility(hwnd: HWND) -> None:
     if _runtime is None or not hwnd:
         return
-    fullscreen = _foreground_fullscreen_on_taskbar_monitor(hwnd)
-    if fullscreen is None:
-        return
-    if fullscreen and not _runtime.fullscreen_hidden:
+    if not _taskbar_visible():
+        should_hide = True
+    else:
+        fullscreen = _foreground_fullscreen_on_taskbar_monitor(hwnd)
+        if fullscreen is None:
+            return
+        should_hide = fullscreen
+    if should_hide and not _runtime.overlay_hidden:
         u32.ShowWindow(hwnd, SW_HIDE)
-        _runtime.fullscreen_hidden = True
-    elif not fullscreen and _runtime.fullscreen_hidden:
+        _runtime.overlay_hidden = True
+    elif not should_hide and _runtime.overlay_hidden:
         _reposition(hwnd)
         u32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
-        _runtime.fullscreen_hidden = False
+        _runtime.overlay_hidden = False
 
 
 def _reposition(hwnd: HWND) -> bool:
@@ -585,7 +610,7 @@ def _wnd_proc(hwnd: HWND, message: int, wparam: int, lparam: int) -> int:
     try:
         if message == WM_TIMER:
             _runtime.ticks += 1
-            _sync_fullscreen_visibility(hwnd)
+            _sync_overlay_visibility(hwnd)
             view = build_tracker_view(_runtime.store.load(), _runtime.settings.enabled_providers)
             if view.fingerprint != _runtime.view.fingerprint:
                 _runtime.view = view
