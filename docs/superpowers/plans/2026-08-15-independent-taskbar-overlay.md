@@ -313,4 +313,3 @@ Enumerate QTrackerTaskbarV1 and assert:
 git add -- README.md
 git commit -m "docs: describe independent taskbar overlay"
 ~~~
-

@@ -51,4 +51,3 @@ The full test suite, PyInstaller build, and packaged smoke tests will verify own
 ## Scope
 
 This change does not register an AppBar, reserve desktop work area, change taskbar auto-hide settings, add multi-taskbar support, or change quota, dashboard, tray, refresh, and rendering behavior.
-
