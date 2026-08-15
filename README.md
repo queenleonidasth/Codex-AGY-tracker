@@ -115,6 +115,10 @@ dist\Q-Tracker\Q-Tracker.exe
 
 Exit จาก tray แล้วเปิด `run.bat` ใหม่ ตัว widget รองรับ display/DPI/taskbar setting change และคำนวณตำแหน่งใหม่อัตโนมัติ
 
+**การแสดงผลเมื่อเปิดหน้าต่างเต็มจอ**
+
+Q-Tracker ยังคงแสดงเมื่อหน้าต่างถูก Maximize ตามปกติและ Windows taskbar ยังอยู่ แต่จะซ่อนอัตโนมัติเมื่อเกมหรือวิดีโอด้านหน้าใช้ fullscreen/borderless fullscreen บนจอเดียวกับ taskbar และจะแสดงกลับโดยไม่แย่ง focus เมื่อออกจากโหมดเต็มจอ
+
 **ต้องการตรวจสุขภาพโดยไม่เปิด console ค้าง**
 
 เปิด dashboard แล้วกด `Diagnostics` หรือรัน `app.py --diagnostics` จาก PowerShell Log หมุนอัตโนมัติที่ 1 MB จำนวน 3 ไฟล์สำรอง
