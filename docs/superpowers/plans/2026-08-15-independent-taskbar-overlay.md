@@ -313,3 +313,125 @@ Enumerate QTrackerTaskbarV1 and assert:
 git add -- README.md
 git commit -m "docs: describe independent taskbar overlay"
 ~~~
+
+
+---
+
+### Task 4: Repair relative Z-order only when taskbar covers overlay
+
+**Files:**
+- Modify: taskbar_widget.py:65-75,450-625
+- Test: tests/test_taskbar_widget.py:420-470
+- Build: dist/Q-Tracker/Q-Tracker.exe
+
+**Interfaces:**
+- Consumes: overlay HWND, Shell_TrayWnd HWND, GetWindow with GW_HWNDPREV, and current overlay_hidden state.
+- Produces: _ensure_overlay_above_taskbar(hwnd: HWND) -> bool.
+
+- [ ] **Step 1: Add failing Z-order tests**
+
+~~~python
+def test_z_order_repair_raises_overlay_when_taskbar_is_above(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            FindWindowW=lambda *_: 300,
+            IsWindowVisible=lambda _h: 1,
+            GetWindow=lambda hwnd, _command: 300 if hwnd == 100 else 0,
+            SetWindowPos=lambda *args: calls.append(args) or 1,
+        ),
+    )
+
+    assert widget._ensure_overlay_above_taskbar(100) is True
+    assert calls == [
+        (
+            100,
+            widget.HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            widget.SWP_NOMOVE | widget.SWP_NOSIZE | widget.SWP_NOACTIVATE,
+        )
+    ]
+
+
+def test_z_order_repair_skips_when_taskbar_is_not_above(monkeypatch):
+    calls = []
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            FindWindowW=lambda *_: 300,
+            IsWindowVisible=lambda _h: 1,
+            GetWindow=lambda *_: 0,
+            SetWindowPos=lambda *args: calls.append(args),
+        ),
+    )
+
+    assert widget._ensure_overlay_above_taskbar(100) is True
+    assert calls == []
+~~~
+
+Run: .\.venv\Scripts\python.exe -m pytest tests\test_taskbar_widget.py -k "z_order_repair" -q
+
+Expected: FAIL because _ensure_overlay_above_taskbar and the required constants do not exist.
+
+- [ ] **Step 2: Implement conditional Z-order repair**
+
+~~~python
+GW_HWNDPREV = 3
+HWND_TOPMOST = -1
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+
+
+def _ensure_overlay_above_taskbar(hwnd: HWND) -> bool:
+    if not hwnd:
+        return False
+    taskbar = u32.FindWindowW("Shell_TrayWnd", None)
+    if not taskbar or not u32.IsWindowVisible(taskbar):
+        return False
+    window_above = u32.GetWindow(hwnd, GW_HWNDPREV)
+    while window_above:
+        if window_above == taskbar:
+            return bool(
+                u32.SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                )
+            )
+        window_above = u32.GetWindow(window_above, GW_HWNDPREV)
+    return True
+~~~
+
+Bind GetWindow and call _ensure_overlay_above_taskbar(hwnd) after _sync_overlay_visibility(hwnd) on each WM_TIMER only when _runtime.overlay_hidden is False.
+
+- [ ] **Step 3: Verify RED/GREEN and regressions**
+
+Run:
+
+~~~powershell
+.\.venv\Scripts\python.exe -m pytest tests\test_taskbar_widget.py -k "z_order_repair" -q
+.\.venv\Scripts\python.exe -m pytest -q
+git diff --check
+~~~
+
+Expected: Z-order tests and the full suite PASS.
+
+- [ ] **Step 4: Commit, rebuild, and smoke test**
+
+~~~powershell
+git add -- taskbar_widget.py tests/test_taskbar_widget.py
+git commit -m "fix: keep overlay above visible taskbar"
+powershell -ExecutionPolicy Bypass -File .\build.ps1
+~~~
+
+Restart the exact packaged executable and verify QTrackerTaskbarV1 has no owner, is topmost, remains above Shell_TrayWnd after activating the taskbar, stays visible on Desktop/Maximize, and hides/restores for borderless fullscreen.
