@@ -368,8 +368,8 @@ def test_changed_view_invalidates_without_background_erase(monkeypatch):
     assert invalidate_calls == [(100, None, 0)]
 
 
-def test_taskbar_popup_uses_owner_without_global_topmost(monkeypatch):
-    """Activating Explorer must keep its owned quota popup above the taskbar."""
+def test_overlay_popup_is_unowned_topmost_tool_window(monkeypatch):
+    """The overlay must stay above the taskbar without inheriting its owner lifecycle."""
     captured = []
     monkeypatch.setattr(
         widget,
@@ -377,11 +377,13 @@ def test_taskbar_popup_uses_owner_without_global_topmost(monkeypatch):
         SimpleNamespace(CreateWindowExW=lambda *args: captured.append(args) or 321),
     )
 
-    result = widget._create_taskbar_popup(11, "TrackerClass", 77, 400)
+    result = widget._create_overlay_popup(11, "TrackerClass", 400)
 
     assert result == 321
-    assert captured[0][8] == 77
-    assert captured[0][0] & widget.WS_EX_TOPMOST == 0
+    assert captured[0][8] is None
+    assert captured[0][0] & widget.WS_EX_TOPMOST
+    assert captured[0][0] & widget.WS_EX_NOACTIVATE
+    assert captured[0][0] & widget.WS_EX_LAYERED
 
 
 def test_create_window_stops_when_taskbar_owner_is_missing(monkeypatch):

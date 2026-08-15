@@ -619,14 +619,13 @@ def _wnd_proc(hwnd: HWND, message: int, wparam: int, lparam: int) -> int:
     return u32.DefWindowProcW(hwnd, message, wparam, lparam)
 
 
-def _create_taskbar_popup(
+def _create_overlay_popup(
     instance: HANDLE,
     class_name: str,
-    owner: HANDLE,
     width: int,
 ) -> HANDLE:
     return u32.CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED,
+        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TOPMOST,
         class_name,
         "Q-Tracker",
         WS_POPUP | WS_VISIBLE,
@@ -634,7 +633,7 @@ def _create_taskbar_popup(
         0,
         width,
         48,
-        owner,
+        None,
         None,
         instance,
         None,
@@ -683,10 +682,9 @@ def _create_window(max_retries: int = 30, retry_delay: float = 0.5) -> bool:
         get_err = getattr(k32, "GetLastError", ctypes.get_last_error)
         if get_err() != ERROR_CLASS_ALREADY_EXISTS:
             return False
-    _runtime.hwnd = _create_taskbar_popup(
+    _runtime.hwnd = _create_overlay_popup(
         instance,
         class_name,
-        taskbar,
         int(_runtime.settings.display.get("width", 460)),
     )
     if not _runtime.hwnd:
