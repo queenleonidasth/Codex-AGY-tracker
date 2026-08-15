@@ -13,7 +13,7 @@ The current popup is owned by Shell_TrayWnd. More importantly, fullscreen detect
 - Create the Q-Tracker popup with no owner handle.
 - Add WS_EX_TOPMOST at creation so normal foreground-window activation cannot place the overlay behind another taskbar-area window.
 - Keep WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE, and WS_EX_LAYERED so the overlay stays out of Alt+Tab, does not take focus, and retains transparent rendering.
-- Do not run a periodic SetWindowPos(HWND_TOPMOST) loop. The topmost extended style is established once at creation.
+- Keep the topmost extended style at creation, then inspect relative Z-order on each existing one-second timer tick. If Shell_TrayWnd is above Q-Tracker, raise Q-Tracker with SetWindowPos(HWND_TOPMOST) using SWP_NOMOVE, SWP_NOSIZE, and SWP_NOACTIVATE. If Q-Tracker is already above the taskbar, make no SetWindowPos call.
 - Continue using Shell_TrayWnd only to calculate the existing 230-pixel right reserve and taskbar-relative rectangle.
 
 ## Taskbar state and fullscreen policy
@@ -44,6 +44,7 @@ Regression tests will prove:
 - Missing or invisible taskbar state hides the overlay once.
 - Restored taskbar state repositions and shows the overlay with SW_SHOWNOACTIVATE.
 - Repeated timer ticks do not issue redundant show/hide or positioning calls.
+- A taskbar above the visible overlay triggers one non-activating Z-order repair, while an already-correct order triggers no repair.
 - Existing 230-pixel positioning, Maximize, borderless fullscreen, zero-geometry, and Explorer retry tests continue passing.
 
 The full test suite, PyInstaller build, and packaged smoke tests will verify owner is zero, topmost is enabled, Desktop clicks keep the overlay visible, Maximize keeps it visible, and borderless fullscreen hides and restores it.
