@@ -231,6 +231,72 @@ def test_desktop_shell_never_counts_as_fullscreen(monkeypatch, class_name):
     assert widget._foreground_fullscreen_on_taskbar_monitor(100) is False
 
 
+@pytest.mark.parametrize(
+    "process_name",
+    ["explorer.exe", "SearchHost.exe", "StartMenuExperienceHost.exe", "ShellExperienceHost.exe"],
+)
+def test_windows_shell_process_never_counts_as_fullscreen(monkeypatch, process_name):
+    """Start/Search shell surfaces must not hide the overlay as fullscreen apps."""
+    monkeypatch.setattr(widget, "_window_process_name", lambda _h: process_name)
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            GetForegroundWindow=lambda: 200,
+            FindWindowW=lambda *_: 300,
+            GetClassNameW=_class_name_reader("Windows.UI.Core.CoreWindow"),
+            IsWindowVisible=lambda _h: 1,
+            IsIconic=lambda _h: 0,
+        ),
+    )
+
+    assert widget._foreground_fullscreen_on_taskbar_monitor(100) is False
+
+
+def test_foreground_event_repairs_z_order_without_waiting_for_timer(monkeypatch):
+    """A foreground transition must repair taskbar overlap immediately."""
+    runtime = _runtime(_view("test"))
+    runtime.hwnd = 100
+    calls = []
+    monkeypatch.setattr(widget, "_runtime", runtime)
+    monkeypatch.setattr(widget, "_ensure_overlay_above_taskbar", lambda hwnd: calls.append(hwnd))
+
+    widget._on_win_event(
+        0,
+        widget.EVENT_SYSTEM_FOREGROUND,
+        200,
+        0,
+        0,
+        0,
+        0,
+    )
+
+    assert calls == [100]
+
+
+def test_install_shell_event_hook_registers_foreground_callback(monkeypatch):
+    """The overlay must subscribe to foreground changes for zero-frame recovery."""
+    hook_calls = []
+    monkeypatch.setattr(widget, "_winevent_hook", None)
+    monkeypatch.setattr(widget, "_winevent_proc", None)
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            SetWinEventHook=lambda *args: hook_calls.append(args) or 55,
+        ),
+    )
+
+    assert widget._install_shell_event_hook() is True
+    assert hook_calls[0][0:2] == (
+        widget.EVENT_SYSTEM_FOREGROUND,
+        widget.EVENT_SYSTEM_FOREGROUND,
+    )
+    assert hook_calls[0][2] is None
+    assert hook_calls[0][3] is widget._winevent_proc
+    assert hook_calls[0][4:] == (0, 0, widget.WINEVENT_OUTOFCONTEXT)
+
+
 def test_entering_fullscreen_hides_once(monkeypatch):
     """Repeated fullscreen timer ticks must issue only one hide transition."""
     runtime = _runtime(_view("test"))

@@ -13,14 +13,16 @@ The original popup was owned by Shell_TrayWnd, and fullscreen detection also mis
 - Create the Q-Tracker popup with no owner handle.
 - Add WS_EX_TOPMOST at creation so normal foreground-window activation cannot place the overlay behind another taskbar-area window.
 - Keep WS_EX_TOOLWINDOW, WS_EX_NOACTIVATE, and WS_EX_LAYERED so the overlay stays out of Alt+Tab, does not take focus, and retains transparent rendering.
-- Keep the topmost extended style at creation, then inspect relative Z-order on a dedicated 50-millisecond shell-state timer. If Shell_TrayWnd is above Q-Tracker, raise Q-Tracker with SetWindowPos(HWND_TOPMOST) using SWP_NOMOVE, SWP_NOSIZE, and SWP_NOACTIVATE. If Q-Tracker is already above the taskbar, make no SetWindowPos call.
+- Keep the topmost extended style at creation, subscribe to `EVENT_SYSTEM_FOREGROUND`, and repair relative Z-order immediately when Windows activates a taskbar/shell surface. If Shell_TrayWnd is above Q-Tracker, raise Q-Tracker with SetWindowPos(HWND_TOPMOST) using SWP_NOMOVE, SWP_NOSIZE, and SWP_NOACTIVATE. If Q-Tracker is already above the taskbar, make no SetWindowPos call.
+- Keep the 50-millisecond shell-state timer as a fallback for Explorer reorder events that do not emit a foreground notification. The event hook is the primary path so a taskbar click does not expose an occluded frame.
 - Continue using Shell_TrayWnd only to calculate the existing 230-pixel right reserve and taskbar-relative rectangle.
 
 ## Timer responsibilities and interaction latency
 
 - Keep the existing configurable data timer, normally 1,000 milliseconds, for loading persisted quota state and rebuilding the rendered view.
-- Add a fixed 50-millisecond shell-state timer for taskbar/fullscreen visibility and relative Z-order only. It must not load quota state or repaint an unchanged view.
-- Clicking the taskbar may temporarily place Shell_TrayWnd above the independent topmost popup. The shell-state timer must repair that order within one 50-millisecond interval without activating Q-Tracker.
+- Add a fixed 50-millisecond shell-state timer for taskbar/fullscreen visibility and relative Z-order fallback only. It must not load quota state or repaint an unchanged view.
+- Subscribe to the foreground event with an out-of-context WinEvent hook. When taskbar or Start/Search shell activation occurs, repair Q-Tracker before the next compositor frame whenever Windows delivers the event.
+- Clicking the taskbar may temporarily place Shell_TrayWnd above the independent topmost popup. The event hook must repair that order immediately; the shell-state timer remains a safety net.
 - Timer messages must be distinguished by their timer IDs so shell-state checks never trigger data refresh work.
 
 ## Taskbar state and fullscreen policy
@@ -28,7 +30,7 @@ The original popup was owned by Shell_TrayWnd, and fullscreen detection also mis
 The shell-state timer will calculate an overlay presentation state:
 
 1. If Shell_TrayWnd is missing or not visible, hide the overlay.
-2. If the foreground window is the desktop shell (class Progman or WorkerW), treat it as normal desktop activity and show the overlay.
+2. If the foreground window is a Windows shell surface (desktop classes Progman/WorkerW or shell processes such as explorer.exe, SearchHost.exe, StartMenuExperienceHost.exe, and ShellExperienceHost.exe), treat it as normal shell activity and show the overlay.
 3. If a visible, non-iconic foreground application on the taskbar monitor covers the full monitor within the existing two-pixel tolerance, hide the overlay.
 4. Otherwise show the overlay.
 5. If a transient Win32 read prevents a confident result, preserve the last confirmed visibility state and retry on the next shell-state timer tick.
@@ -54,9 +56,11 @@ Regression tests will prove:
 - A taskbar above the visible overlay triggers one non-activating Z-order repair, while an already-correct order triggers no repair.
 - The 50-millisecond shell-state timer performs visibility and Z-order synchronization without loading quota state.
 - The configurable data timer continues loading quota state without duplicating shell-state work.
+- The foreground WinEvent hook repairs taskbar overlap without waiting for the fallback timer and is unhooked when the overlay closes.
+- Windows shell processes used by Start/Search never count as fullscreen applications.
 - Existing 230-pixel positioning, Maximize, borderless fullscreen, zero-geometry, and Explorer retry tests continue passing.
 
-The full test suite, PyInstaller build, and packaged smoke tests will verify owner is zero, topmost is enabled, Desktop clicks keep the overlay visible, taskbar clicks are repaired within 100 milliseconds of observation, Maximize keeps it visible, and borderless fullscreen hides and restores it.
+The full test suite, PyInstaller build, and packaged smoke tests will verify owner is zero, topmost is enabled, Desktop and Start/Search clicks keep the overlay visible without a visible occlusion interval, taskbar clicks are repaired by the foreground event path with the timer as fallback, Maximize keeps it visible, and borderless fullscreen hides and restores it.
 
 ## Scope
 

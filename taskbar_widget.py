@@ -32,10 +32,21 @@ BOOL = ctypes.c_int
 UINT = ctypes.c_uint
 INT = ctypes.c_int
 DWORD = ctypes.c_uint
+LONG = ctypes.c_long
 WPARAM = ctypes.c_size_t
 LPARAM = ctypes.c_ssize_t
 LRESULT = ctypes.c_ssize_t
 WNDPROC = ctypes.WINFUNCTYPE(LRESULT, HWND, UINT, WPARAM, LPARAM)
+WINEVENTPROC = ctypes.WINFUNCTYPE(
+    None,
+    HANDLE,
+    UINT,
+    HWND,
+    LONG,
+    LONG,
+    DWORD,
+    DWORD,
+)
 
 WS_VISIBLE = 0x10000000
 WS_POPUP = 0x80000000
@@ -54,6 +65,8 @@ WM_TIMER = 0x0113
 WM_RBUTTONDOWN = 0x0204
 WM_LBUTTONDBLCLK = 0x0203
 WM_DPICHANGED = 0x02E0
+EVENT_SYSTEM_FOREGROUND = 0x0003
+WINEVENT_OUTOFCONTEXT = 0x0000
 
 CS_HREDRAW = 0x0002
 CS_VREDRAW = 0x0001
@@ -93,12 +106,20 @@ dwmapi = ctypes.windll.dwmapi
 
 k32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
 k32.GetModuleHandleW.restype = HANDLE
+k32.OpenProcess.argtypes = [DWORD, BOOL, DWORD]
+k32.OpenProcess.restype = HANDLE
+k32.QueryFullProcessImageNameW.argtypes = [HANDLE, DWORD, ctypes.POINTER(ctypes.c_wchar), ctypes.POINTER(DWORD)]
+k32.QueryFullProcessImageNameW.restype = BOOL
+k32.CloseHandle.argtypes = [HANDLE]
+k32.CloseHandle.restype = BOOL
 u32.FindWindowW.argtypes = [ctypes.c_wchar_p, ctypes.c_wchar_p]
 u32.FindWindowW.restype = HANDLE
 u32.GetWindowRect.argtypes = [HANDLE, ctypes.POINTER(wintypes.RECT)]
 u32.GetWindowRect.restype = BOOL
 u32.GetClassNameW.argtypes = [HANDLE, ctypes.POINTER(ctypes.c_wchar), INT]
 u32.GetClassNameW.restype = INT
+u32.GetWindowThreadProcessId.argtypes = [HANDLE, ctypes.POINTER(DWORD)]
+u32.GetWindowThreadProcessId.restype = DWORD
 u32.GetWindow.argtypes = [HANDLE, UINT]
 u32.GetWindow.restype = HANDLE
 u32.GetClientRect.argtypes = [HANDLE, ctypes.POINTER(wintypes.RECT)]
@@ -135,6 +156,10 @@ u32.SetLayeredWindowAttributes.argtypes = [HANDLE, ctypes.c_uint, ctypes.c_byte,
 u32.SetLayeredWindowAttributes.restype = BOOL
 u32.SetWindowPos.argtypes = [HANDLE, HANDLE, INT, INT, INT, INT, UINT]
 u32.SetWindowPos.restype = BOOL
+u32.SetWinEventHook.argtypes = [UINT, UINT, HANDLE, WINEVENTPROC, DWORD, DWORD, UINT]
+u32.SetWinEventHook.restype = HANDLE
+u32.UnhookWinEvent.argtypes = [HANDLE]
+u32.UnhookWinEvent.restype = BOOL
 u32.LoadCursorW.argtypes = [HANDLE, ctypes.c_void_p]
 u32.LoadCursorW.restype = HANDLE
 u32.GetMessageW.argtypes = [ctypes.c_void_p, HANDLE, UINT, UINT]
@@ -284,6 +309,8 @@ class RenderSegment:
 
 _runtime: Optional[_Runtime] = None
 _wndproc_ref: Optional[WNDPROC] = None
+_winevent_proc: Optional[WINEVENTPROC] = None
+_winevent_hook: Optional[HANDLE] = None
 _background_brush: Optional[HANDLE] = None
 _font_cache = FontCache()
 
@@ -292,6 +319,15 @@ ERROR_CLASS_ALREADY_EXISTS = 1410
 DWMWA_EXTENDED_FRAME_BOUNDS = 9
 MONITOR_DEFAULTTONULL = 0
 DESKTOP_SHELL_CLASSES = frozenset({"Progman", "WorkerW"})
+SHELL_PROCESS_NAMES = frozenset(
+    {
+        "explorer.exe",
+        "searchhost.exe",
+        "searchapp.exe",
+        "startmenuexperiencehost.exe",
+        "shellexperiencehost.exe",
+    }
+)
 
 
 def request_close() -> None:
@@ -441,8 +477,90 @@ def _window_class_name(hwnd: HWND) -> str:
     return class_name.value
 
 
+def _window_process_name(hwnd: HWND) -> str:
+    get_process_id = getattr(u32, "GetWindowThreadProcessId", None)
+    if get_process_id is None:
+        return ""
+    process_id = DWORD()
+    if not get_process_id(hwnd, ctypes.byref(process_id)):
+        return ""
+    open_process = getattr(k32, "OpenProcess", None)
+    query_name = getattr(k32, "QueryFullProcessImageNameW", None)
+    close_handle = getattr(k32, "CloseHandle", None)
+    if open_process is None or query_name is None or close_handle is None:
+        return ""
+    process = open_process(0x1000, False, process_id.value)
+    if not process:
+        return ""
+    try:
+        path = ctypes.create_unicode_buffer(32768)
+        path_length = DWORD(len(path))
+        if not query_name(process, 0, path, ctypes.byref(path_length)):
+            return ""
+        return path.value.rsplit("\\", 1)[-1].casefold()
+    finally:
+        close_handle(process)
+
+
+def _is_windows_shell_window(hwnd: HWND) -> bool:
+    return (
+        _window_class_name(hwnd) in DESKTOP_SHELL_CLASSES
+        or _window_process_name(hwnd).casefold() in SHELL_PROCESS_NAMES
+    )
+
+
 def _is_desktop_shell_window(hwnd: HWND) -> bool:
-    return _window_class_name(hwnd) in DESKTOP_SHELL_CLASSES
+    return _is_windows_shell_window(hwnd)
+
+
+def _on_win_event(
+    _hook: HANDLE,
+    event: int,
+    _hwnd: HWND,
+    _id_object: int,
+    _id_child: int,
+    _event_thread: int,
+    _event_time: int,
+) -> None:
+    if event != EVENT_SYSTEM_FOREGROUND:
+        return
+    try:
+        if _runtime is not None and _runtime.hwnd and not _runtime.overlay_hidden:
+            _ensure_overlay_above_taskbar(_runtime.hwnd)
+    except Exception:
+        # WinEvent callbacks must never escape into the native callback boundary.
+        return
+
+
+def _install_shell_event_hook() -> bool:
+    global _winevent_hook, _winevent_proc
+    if _winevent_hook:
+        return True
+    set_hook = getattr(u32, "SetWinEventHook", None)
+    if set_hook is None:
+        return False
+    _winevent_proc = WINEVENTPROC(_on_win_event)
+    _winevent_hook = set_hook(
+        EVENT_SYSTEM_FOREGROUND,
+        EVENT_SYSTEM_FOREGROUND,
+        None,
+        _winevent_proc,
+        0,
+        0,
+        WINEVENT_OUTOFCONTEXT,
+    )
+    if not _winevent_hook:
+        _winevent_proc = None
+        return False
+    return True
+
+
+def _uninstall_shell_event_hook() -> None:
+    global _winevent_hook, _winevent_proc
+    if _winevent_hook:
+        u32.UnhookWinEvent(_winevent_hook)
+    _winevent_hook = None
+    _winevent_proc = None
 
 
 def _foreground_fullscreen_on_taskbar_monitor(
@@ -673,11 +791,13 @@ def _wnd_proc(hwnd: HWND, message: int, wparam: int, lparam: int) -> int:
             _show_menu(hwnd)
             return 0
         if message == WM_CLOSE:
+            _uninstall_shell_event_hook()
             u32.KillTimer(hwnd, DATA_REFRESH_TIMER_ID)
             u32.KillTimer(hwnd, SHELL_SYNC_TIMER_ID)
             u32.DestroyWindow(hwnd)
             return 0
         if message == WM_DESTROY:
+            _uninstall_shell_event_hook()
             _font_cache.cleanup()
             u32.PostQuitMessage(0)
             return 0
@@ -776,6 +896,7 @@ def _create_window(max_retries: int = 30, retry_delay: float = 0.5) -> bool:
         SHELL_SYNC_INTERVAL_MS,
         None,
     )
+    _install_shell_event_hook()
     u32.ShowWindow(_runtime.hwnd, 5)
     u32.UpdateWindow(_runtime.hwnd)
     return True
