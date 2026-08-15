@@ -76,9 +76,11 @@ DEFAULT_CHARSET = 1
 ANTIALIASED_QUALITY = 4
 COLORKEY_RGB = 0x00010101
 TASKBAR_RIGHT_RESERVE = 230
+FULLSCREEN_TOLERANCE_PX = 2
 u32 = ctypes.windll.user32
 g32 = ctypes.windll.gdi32
 k32 = ctypes.windll.kernel32
+dwmapi = ctypes.windll.dwmapi
 
 k32.GetModuleHandleW.argtypes = [ctypes.c_wchar_p]
 k32.GetModuleHandleW.restype = HANDLE
@@ -192,6 +194,29 @@ class PAINTSTRUCT(ctypes.Structure):
     ]
 
 
+class MONITORINFO(ctypes.Structure):
+    _fields_ = [
+        ("cbSize", DWORD),
+        ("rcMonitor", wintypes.RECT),
+        ("rcWork", wintypes.RECT),
+        ("dwFlags", DWORD),
+    ]
+
+
+u32.GetForegroundWindow.argtypes = []
+u32.GetForegroundWindow.restype = HWND
+u32.MonitorFromWindow.argtypes = [HWND, DWORD]
+u32.MonitorFromWindow.restype = HANDLE
+u32.GetMonitorInfoW.argtypes = [HANDLE, ctypes.POINTER(MONITORINFO)]
+u32.GetMonitorInfoW.restype = BOOL
+u32.IsWindowVisible.argtypes = [HWND]
+u32.IsWindowVisible.restype = BOOL
+u32.IsIconic.argtypes = [HWND]
+u32.IsIconic.restype = BOOL
+dwmapi.DwmGetWindowAttribute.argtypes = [HWND, DWORD, ctypes.c_void_p, DWORD]
+dwmapi.DwmGetWindowAttribute.restype = ctypes.c_long
+
+
 def rgb(value: Any) -> int:
     """Convert a CSS hex color or RGB tuple into a Win32 COLORREF."""
     if isinstance(value, str) and len(value.lstrip("#")) == 6:
@@ -250,6 +275,8 @@ _font_cache = FontCache()
 
 
 ERROR_CLASS_ALREADY_EXISTS = 1410
+DWMWA_EXTENDED_FRAME_BOUNDS = 9
+MONITOR_DEFAULTTONULL = 0
 
 
 def request_close() -> None:
@@ -339,6 +366,82 @@ def _taskbar_overlay_position(
     width = taskbar_width
     height = min(180, max(60, taskbar_height - 150))
     return left, bottom - height - 100, width, height
+
+
+def _rect_covers_monitor(
+    window_bounds: tuple[int, int, int, int],
+    monitor_bounds: tuple[int, int, int, int],
+    tolerance: int = FULLSCREEN_TOLERANCE_PX,
+) -> bool:
+    window_left, window_top, window_right, window_bottom = window_bounds
+    monitor_left, monitor_top, monitor_right, monitor_bottom = monitor_bounds
+    return (
+        window_left <= monitor_left + tolerance
+        and window_top <= monitor_top + tolerance
+        and window_right >= monitor_right - tolerance
+        and window_bottom >= monitor_bottom - tolerance
+    )
+
+
+def _window_bounds(hwnd: HWND) -> Optional[tuple[int, int, int, int]]:
+    bounds = wintypes.RECT()
+    try:
+        result = dwmapi.DwmGetWindowAttribute(
+            hwnd,
+            DWMWA_EXTENDED_FRAME_BOUNDS,
+            ctypes.byref(bounds),
+            ctypes.sizeof(bounds),
+        )
+    except (AttributeError, OSError):
+        result = -1
+    if result == 0 and bounds.right > bounds.left and bounds.bottom > bounds.top:
+        return bounds.left, bounds.top, bounds.right, bounds.bottom
+    if not u32.GetWindowRect(hwnd, ctypes.byref(bounds)):
+        return None
+    if bounds.right <= bounds.left or bounds.bottom <= bounds.top:
+        return None
+    return bounds.left, bounds.top, bounds.right, bounds.bottom
+
+
+def _monitor_for_window(
+    hwnd: HWND,
+) -> Optional[tuple[HANDLE, tuple[int, int, int, int]]]:
+    monitor = u32.MonitorFromWindow(hwnd, MONITOR_DEFAULTTONULL)
+    if not monitor:
+        return None
+    info = MONITORINFO()
+    info.cbSize = ctypes.sizeof(MONITORINFO)
+    if not u32.GetMonitorInfoW(monitor, ctypes.byref(info)):
+        return None
+    bounds = info.rcMonitor
+    if bounds.right <= bounds.left or bounds.bottom <= bounds.top:
+        return None
+    return monitor, (bounds.left, bounds.top, bounds.right, bounds.bottom)
+
+
+def _foreground_fullscreen_on_taskbar_monitor(
+    overlay_hwnd: HWND,
+) -> Optional[bool]:
+    foreground = u32.GetForegroundWindow()
+    if not foreground:
+        return None
+    taskbar = u32.FindWindowW("Shell_TrayWnd", None)
+    if not taskbar:
+        return None
+    if foreground == overlay_hwnd or foreground == taskbar:
+        return False
+    if not u32.IsWindowVisible(foreground) or u32.IsIconic(foreground):
+        return False
+    foreground_monitor = _monitor_for_window(foreground)
+    taskbar_monitor = _monitor_for_window(taskbar)
+    if foreground_monitor is None or taskbar_monitor is None:
+        return None
+    if foreground_monitor[0] != taskbar_monitor[0]:
+        return False
+    foreground_bounds = _window_bounds(foreground)
+    if foreground_bounds is None:
+        return None
+    return _rect_covers_monitor(foreground_bounds, foreground_monitor[1])
 
 
 def _reposition(hwnd: HWND) -> bool:

@@ -32,6 +32,21 @@ def _rect_reader(bounds):
     return read
 
 
+def _monitor_info_reader(bounds_by_monitor):
+    def read(monitor, info_pointer):
+        bounds = bounds_by_monitor[monitor]
+        info = info_pointer._obj
+        (
+            info.rcMonitor.left,
+            info.rcMonitor.top,
+            info.rcMonitor.right,
+            info.rcMonitor.bottom,
+        ) = bounds
+        return 1
+
+    return read
+
+
 def _window(window_id: str, label: str, remaining: float) -> WindowView:
     return WindowView(window_id, label, label, remaining, 100 - remaining, None, "—", "normal")
 
@@ -97,6 +112,85 @@ def test_reposition_skips_unchanged_valid_position(monkeypatch):
 
     assert widget._reposition(100) is True
     assert set_position_calls == []
+
+
+def test_maximized_work_area_does_not_cover_monitor():
+    """A maximized app that leaves the taskbar visible must keep Q-Tracker visible."""
+    assert widget._rect_covers_monitor(
+        (0, 0, 1920, 1032),
+        (0, 0, 1920, 1080),
+    ) is False
+
+
+def test_borderless_fullscreen_covers_monitor():
+    """A borderless app covering the complete monitor must hide Q-Tracker."""
+    assert widget._rect_covers_monitor(
+        (0, 0, 1920, 1080),
+        (0, 0, 1920, 1080),
+    ) is True
+
+
+def test_fullscreen_tolerates_two_pixel_rounding_only():
+    """DPI rounding may miss two pixels, but a larger gap is not fullscreen."""
+    monitor = (0, 0, 1920, 1080)
+
+    assert widget._rect_covers_monitor((1, 2, 1918, 1079), monitor) is True
+    assert widget._rect_covers_monitor((0, 0, 1917, 1080), monitor) is False
+
+
+def test_foreground_fullscreen_on_taskbar_monitor_is_detected(monkeypatch):
+    """A same-monitor borderless foreground window must request hiding."""
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            GetForegroundWindow=lambda: 200,
+            FindWindowW=lambda *_: 300,
+            IsWindowVisible=lambda _h: 1,
+            IsIconic=lambda _h: 0,
+            MonitorFromWindow=lambda _h, _flags: 10,
+            GetMonitorInfoW=_monitor_info_reader({10: (0, 0, 1920, 1080)}),
+            GetWindowRect=_rect_reader((0, 0, 1920, 1080)),
+        ),
+    )
+    monkeypatch.setattr(
+        widget,
+        "dwmapi",
+        SimpleNamespace(DwmGetWindowAttribute=lambda *_: -1),
+    )
+
+    assert widget._foreground_fullscreen_on_taskbar_monitor(100) is True
+
+
+def test_foreground_fullscreen_on_other_monitor_is_ignored(monkeypatch):
+    """Fullscreen on another monitor must not hide this taskbar's overlay."""
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            GetForegroundWindow=lambda: 200,
+            FindWindowW=lambda *_: 300,
+            IsWindowVisible=lambda _h: 1,
+            IsIconic=lambda _h: 0,
+            MonitorFromWindow=lambda h, _flags: 10 if h == 200 else 20,
+            GetMonitorInfoW=_monitor_info_reader(
+                {10: (1920, 0, 3840, 1080), 20: (0, 0, 1920, 1080)}
+            ),
+        ),
+    )
+
+    assert widget._foreground_fullscreen_on_taskbar_monitor(100) is False
+
+
+def test_missing_foreground_window_preserves_visibility_state(monkeypatch):
+    """A transient missing foreground handle is unknown, not proof of fullscreen."""
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(GetForegroundWindow=lambda: 0),
+    )
+
+    assert widget._foreground_fullscreen_on_taskbar_monitor(100) is None
 
 
 def test_render_segments_preserve_compact_provider_text_order():
