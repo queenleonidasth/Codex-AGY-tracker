@@ -274,10 +274,32 @@ def test_foreground_event_repairs_z_order_without_waiting_for_timer(monkeypatch)
     assert calls == [100]
 
 
+def test_reorder_event_repairs_taskbar_overlap(monkeypatch):
+    """The reorder event must repair the taskbar after its Z-order change."""
+    runtime = _runtime(_view("test"))
+    runtime.hwnd = 100
+    calls = []
+    monkeypatch.setattr(widget, "_runtime", runtime)
+    monkeypatch.setattr(widget, "_ensure_overlay_above_taskbar", lambda hwnd: calls.append(hwnd))
+
+    widget._on_win_event(
+        0,
+        widget.EVENT_OBJECT_REORDER,
+        300,
+        0,
+        0,
+        0,
+        0,
+    )
+
+    assert calls == [100]
+
+
 def test_install_shell_event_hook_registers_foreground_callback(monkeypatch):
     """The overlay must subscribe to foreground changes for zero-frame recovery."""
     hook_calls = []
     monkeypatch.setattr(widget, "_winevent_hook", None)
+    monkeypatch.setattr(widget, "_reorder_winevent_hook", None)
     monkeypatch.setattr(widget, "_winevent_proc", None)
     monkeypatch.setattr(
         widget,
@@ -288,6 +310,7 @@ def test_install_shell_event_hook_registers_foreground_callback(monkeypatch):
     )
 
     assert widget._install_shell_event_hook() is True
+    assert len(hook_calls) == 2
     assert hook_calls[0][0:2] == (
         widget.EVENT_SYSTEM_FOREGROUND,
         widget.EVENT_SYSTEM_FOREGROUND,
@@ -295,6 +318,10 @@ def test_install_shell_event_hook_registers_foreground_callback(monkeypatch):
     assert hook_calls[0][2] is None
     assert hook_calls[0][3] is widget._winevent_proc
     assert hook_calls[0][4:] == (0, 0, widget.WINEVENT_OUTOFCONTEXT)
+    assert hook_calls[1][0:2] == (
+        widget.EVENT_OBJECT_REORDER,
+        widget.EVENT_OBJECT_REORDER,
+    )
 
 
 def test_entering_fullscreen_hides_once(monkeypatch):

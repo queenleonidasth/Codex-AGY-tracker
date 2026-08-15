@@ -66,6 +66,7 @@ WM_RBUTTONDOWN = 0x0204
 WM_LBUTTONDBLCLK = 0x0203
 WM_DPICHANGED = 0x02E0
 EVENT_SYSTEM_FOREGROUND = 0x0003
+EVENT_OBJECT_REORDER = 0x8004
 WINEVENT_OUTOFCONTEXT = 0x0000
 
 CS_HREDRAW = 0x0002
@@ -311,6 +312,7 @@ _runtime: Optional[_Runtime] = None
 _wndproc_ref: Optional[WNDPROC] = None
 _winevent_proc: Optional[WINEVENTPROC] = None
 _winevent_hook: Optional[HANDLE] = None
+_reorder_winevent_hook: Optional[HANDLE] = None
 _background_brush: Optional[HANDLE] = None
 _font_cache = FontCache()
 
@@ -522,7 +524,7 @@ def _on_win_event(
     _event_thread: int,
     _event_time: int,
 ) -> None:
-    if event != EVENT_SYSTEM_FOREGROUND:
+    if event not in (EVENT_SYSTEM_FOREGROUND, EVENT_OBJECT_REORDER):
         return
     try:
         if _runtime is not None and _runtime.hwnd and not _runtime.overlay_hidden:
@@ -533,14 +535,14 @@ def _on_win_event(
 
 
 def _install_shell_event_hook() -> bool:
-    global _winevent_hook, _winevent_proc
-    if _winevent_hook:
+    global _winevent_hook, _reorder_winevent_hook, _winevent_proc
+    if _winevent_hook and _reorder_winevent_hook:
         return True
     set_hook = getattr(u32, "SetWinEventHook", None)
     if set_hook is None:
         return False
     _winevent_proc = WINEVENTPROC(_on_win_event)
-    _winevent_hook = set_hook(
+    foreground_hook = set_hook(
         EVENT_SYSTEM_FOREGROUND,
         EVENT_SYSTEM_FOREGROUND,
         None,
@@ -549,17 +551,35 @@ def _install_shell_event_hook() -> bool:
         0,
         WINEVENT_OUTOFCONTEXT,
     )
-    if not _winevent_hook:
+    if not foreground_hook:
         _winevent_proc = None
         return False
+    reorder_hook = set_hook(
+        EVENT_OBJECT_REORDER,
+        EVENT_OBJECT_REORDER,
+        None,
+        _winevent_proc,
+        0,
+        0,
+        WINEVENT_OUTOFCONTEXT,
+    )
+    if not reorder_hook:
+        u32.UnhookWinEvent(foreground_hook)
+        _winevent_proc = None
+        return False
+    _winevent_hook = foreground_hook
+    _reorder_winevent_hook = reorder_hook
     return True
 
 
 def _uninstall_shell_event_hook() -> None:
-    global _winevent_hook, _winevent_proc
+    global _winevent_hook, _reorder_winevent_hook, _winevent_proc
     if _winevent_hook:
         u32.UnhookWinEvent(_winevent_hook)
+    if _reorder_winevent_hook:
+        u32.UnhookWinEvent(_reorder_winevent_hook)
     _winevent_hook = None
+    _reorder_winevent_hook = None
     _winevent_proc = None
 
 
