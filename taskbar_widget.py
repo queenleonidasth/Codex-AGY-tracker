@@ -49,6 +49,10 @@ WINEVENTPROC = ctypes.WINFUNCTYPE(
 )
 
 WS_VISIBLE = 0x10000000
+WS_CHILD = 0x40000000
+WS_CLIPCHILDREN = 0x02000000
+WS_CLIPSIBLINGS = 0x04000000
+WS_SYSMENU = 0x00080000
 WS_POPUP = 0x80000000
 WS_EX_TOOLWINDOW = 0x00000080
 WS_EX_LAYERED = 0x00080000
@@ -85,6 +89,7 @@ SWP_NOSIZE = 0x0001
 SWP_NOMOVE = 0x0002
 SW_HIDE = 0
 SW_SHOWNOACTIVATE = 4
+HWND_TOP = 0
 LWA_COLORKEY = 0x00000001
 TPM_RETURNCMD = 0x0100
 MF_STRING = 0x0000
@@ -124,6 +129,8 @@ u32.GetWindowThreadProcessId.argtypes = [HANDLE, ctypes.POINTER(DWORD)]
 u32.GetWindowThreadProcessId.restype = DWORD
 u32.GetWindow.argtypes = [HANDLE, UINT]
 u32.GetWindow.restype = HANDLE
+u32.GetParent.argtypes = [HANDLE]
+u32.GetParent.restype = HANDLE
 u32.GetClientRect.argtypes = [HANDLE, ctypes.POINTER(wintypes.RECT)]
 u32.GetClientRect.restype = BOOL
 u32.RegisterClassExW.argtypes = [ctypes.c_void_p]
@@ -422,6 +429,39 @@ def _taskbar_overlay_position(
     return left, bottom - height - 100, width, height
 
 
+def _taskbar_child_position(
+    taskbar: HWND,
+    configured_width: int,
+) -> Optional[tuple[int, int, int, int]]:
+    """Return geometry in ``Shell_TrayWnd`` client coordinates.
+
+    A child window must be positioned in its parent's client space.  Using
+    the current taskbar client size also keeps the 230 px right anchor stable
+    when the display resolution or taskbar DPI changes.
+    """
+    get_client_rect = getattr(u32, "GetClientRect", None)
+    if get_client_rect is None:
+        return None
+    client = wintypes.RECT()
+    try:
+        if not get_client_rect(taskbar, ctypes.byref(client)):
+            return None
+    except (AttributeError, OSError):
+        return None
+    taskbar_width = client.right - client.left
+    taskbar_height = client.bottom - client.top
+    if taskbar_width <= 0 or taskbar_height <= 0:
+        return None
+    if taskbar_width >= taskbar_height:
+        width = taskbar_overlay_width(configured_width, taskbar_width)
+        x = max(0, taskbar_width - width - TASKBAR_RIGHT_RESERVE)
+        return x, 0, width, taskbar_height
+    width = taskbar_width
+    height = min(180, max(60, taskbar_height - 150))
+    y = max(0, taskbar_height - height - 100)
+    return 0, y, width, height
+
+
 def _rect_covers_monitor(
     window_bounds: tuple[int, int, int, int],
     monitor_bounds: tuple[int, int, int, int],
@@ -625,6 +665,21 @@ def _ensure_overlay_above_taskbar(hwnd: HWND) -> bool:
     taskbar = u32.FindWindowW("Shell_TrayWnd", None)
     if not taskbar or not u32.IsWindowVisible(taskbar):
         return False
+    get_parent = getattr(u32, "GetParent", None)
+    if get_parent is not None and get_parent(hwnd) == taskbar:
+        if not u32.GetWindow(hwnd, GW_HWNDPREV):
+            return True
+        return bool(
+            u32.SetWindowPos(
+                hwnd,
+                HWND_TOP,
+                0,
+                0,
+                0,
+                0,
+                SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+            )
+        )
     window_above = u32.GetWindow(hwnd, GW_HWNDPREV)
     while window_above:
         if window_above == taskbar:
@@ -666,18 +721,22 @@ def _reposition(hwnd: HWND) -> bool:
     if _runtime is None or not hwnd:
         return False
     taskbar = u32.FindWindowW("Shell_TrayWnd", None)
-    bounds = wintypes.RECT()
-    if not taskbar or not u32.GetWindowRect(taskbar, ctypes.byref(bounds)):
+    if not taskbar:
         return False
-    taskbar_bounds = (bounds.left, bounds.top, bounds.right, bounds.bottom)
-    if bounds.right <= bounds.left or bounds.bottom <= bounds.top:
-        return False
-    position = _taskbar_overlay_position(
-        taskbar_bounds,
-        int(_runtime.settings.display.get("width", 460)),
-    )
+    display = getattr(_runtime.settings, "display", {}) or {}
+    configured_width = int(display.get("width", 460))
+    position = _taskbar_child_position(taskbar, configured_width)
     if position is None:
-        return False
+        bounds = wintypes.RECT()
+        get_window_rect = getattr(u32, "GetWindowRect", None)
+        if get_window_rect is None or not get_window_rect(taskbar, ctypes.byref(bounds)):
+            return False
+        taskbar_bounds = (bounds.left, bounds.top, bounds.right, bounds.bottom)
+        screen_position = _taskbar_overlay_position(taskbar_bounds, configured_width)
+        if screen_position is None:
+            return False
+        x, y, width, height = screen_position
+        position = (x - bounds.left, y - bounds.top, width, height)
     if _runtime.last_position == position:
         return True
     x, y, width, height = position
@@ -791,6 +850,12 @@ def _wnd_proc(hwnd: HWND, message: int, wparam: int, lparam: int) -> int:
             if wparam == SHELL_SYNC_TIMER_ID:
                 _sync_overlay_visibility(hwnd)
                 if not _runtime.overlay_hidden:
+                    # Explorer can keep this taskbar child alive without
+                    # forwarding WM_DISPLAYCHANGE/WM_DPICHANGED to it.  A
+                    # no-op reposition check keeps the anchor current after
+                    # a resolution or taskbar-layout change; SetWindowPos is
+                    # only issued when the client geometry actually differs.
+                    _reposition(hwnd)
                     _ensure_overlay_above_taskbar(hwnd)
                 return 0
             if wparam == DATA_REFRESH_TIMER_ID:
@@ -835,21 +900,22 @@ def _wnd_proc(hwnd: HWND, message: int, wparam: int, lparam: int) -> int:
     return u32.DefWindowProcW(hwnd, message, wparam, lparam)
 
 
-def _create_overlay_popup(
+def _create_taskbar_child(
     instance: HANDLE,
     class_name: str,
     width: int,
+    taskbar: HWND,
 ) -> HANDLE:
     return u32.CreateWindowExW(
-        WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TOPMOST,
+        WS_EX_NOACTIVATE | WS_EX_LAYERED | WS_EX_TOPMOST,
         class_name,
         "Q-Tracker",
-        WS_POPUP | WS_VISIBLE,
+        WS_CHILD | WS_VISIBLE | WS_CLIPCHILDREN | WS_CLIPSIBLINGS | WS_SYSMENU,
         0,
         0,
         width,
         48,
-        None,
+        taskbar,
         None,
         instance,
         None,
@@ -898,10 +964,11 @@ def _create_window(max_retries: int = 30, retry_delay: float = 0.5) -> bool:
         get_err = getattr(k32, "GetLastError", ctypes.get_last_error)
         if get_err() != ERROR_CLASS_ALREADY_EXISTS:
             return False
-    _runtime.hwnd = _create_overlay_popup(
+    _runtime.hwnd = _create_taskbar_child(
         instance,
         class_name,
         int(_runtime.settings.display.get("width", 460)),
+        taskbar,
     )
     if not _runtime.hwnd:
         return False

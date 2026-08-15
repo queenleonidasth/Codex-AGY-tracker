@@ -107,7 +107,7 @@ def test_reposition_skips_unchanged_valid_position(monkeypatch):
     """Repeated display notifications must not move an already-correct overlay."""
     runtime = _runtime(_view("test"))
     runtime.settings.display = {"width": 460}
-    runtime.last_position = (1290, 1032, 400, 48)
+    runtime.last_position = (1290, 0, 400, 48)
     set_position_calls = []
     monkeypatch.setattr(widget, "_runtime", runtime)
     monkeypatch.setattr(
@@ -122,6 +122,67 @@ def test_reposition_skips_unchanged_valid_position(monkeypatch):
 
     assert widget._reposition(100) is True
     assert set_position_calls == []
+
+
+def test_reposition_uses_taskbar_client_coordinates(monkeypatch):
+    """A taskbar child must be positioned relative to its Explorer parent."""
+    runtime = _runtime(_view("test"))
+    runtime.settings.display = {"width": 460}
+    set_position_calls = []
+    monkeypatch.setattr(widget, "_runtime", runtime)
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            FindWindowW=lambda *_: 99,
+            GetWindowRect=_rect_reader((0, 1032, 1920, 1080)),
+            SetWindowPos=lambda *args: set_position_calls.append(args) or 1,
+        ),
+    )
+
+    assert widget._reposition(100) is True
+    assert set_position_calls == [
+        (
+            100,
+            None,
+            1290,
+            0,
+            400,
+            48,
+            widget.SWP_NOZORDER | widget.SWP_NOACTIVATE,
+        )
+    ]
+
+
+def test_reposition_uses_current_taskbar_client_size_after_resolution_change(monkeypatch):
+    """A child position must follow Explorer's current client size, not stale screen bounds."""
+    runtime = _runtime(_view("test"))
+    runtime.settings.display = {"width": 460}
+    set_position_calls = []
+    monkeypatch.setattr(widget, "_runtime", runtime)
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            FindWindowW=lambda *_: 99,
+            GetClientRect=_rect_reader((0, 0, 2560, 64)),
+            GetWindowRect=_rect_reader((0, 1032, 1920, 1080)),
+            SetWindowPos=lambda *args: set_position_calls.append(args) or 1,
+        ),
+    )
+
+    assert widget._reposition(100) is True
+    assert set_position_calls == [
+        (
+            100,
+            None,
+            1930,
+            0,
+            400,
+            64,
+            widget.SWP_NOZORDER | widget.SWP_NOACTIVATE,
+        )
+    ]
 
 
 def test_maximized_work_area_does_not_cover_monitor():
@@ -551,8 +612,8 @@ def test_render_segments_include_waiting_text_without_providers():
     assert segments[0].gap_after == 0
 
 
-def test_shell_timer_never_repositions_when_order_is_already_correct(monkeypatch):
-    """Shell checks must not start a periodic positioning or Z-order fight."""
+def test_shell_timer_rechecks_geometry_without_moving_unchanged_window(monkeypatch):
+    """Shell checks may recalculate geometry but must not move an unchanged child."""
     current = _view("same")
     reposition_calls = []
     set_position_calls = []
@@ -583,8 +644,30 @@ def test_shell_timer_never_repositions_when_order_is_already_correct(monkeypatch
     assert widget._wnd_proc(100, widget.WM_TIMER, widget.SHELL_SYNC_TIMER_ID, 0) == 0
     assert visibility_syncs == [100]
     assert z_order_syncs == [100]
-    assert reposition_calls == []
+    assert reposition_calls == [100]
     assert set_position_calls == []
+
+
+def test_shell_timer_repositions_visible_child_after_taskbar_layout_change(monkeypatch):
+    """The child must refresh geometry because display broadcasts can skip child windows."""
+    current = _view("same")
+    reposition_calls = []
+    monkeypatch.setattr(widget, "_runtime", _runtime(current, ticks=4))
+    monkeypatch.setattr(widget, "_sync_overlay_visibility", lambda _hwnd: None)
+    monkeypatch.setattr(
+        widget,
+        "_reposition",
+        lambda hwnd: reposition_calls.append(hwnd) or True,
+    )
+    monkeypatch.setattr(
+        widget,
+        "_ensure_overlay_above_taskbar",
+        lambda _hwnd: True,
+    )
+    monkeypatch.setattr(widget, "u32", SimpleNamespace(DefWindowProcW=lambda *_: -1))
+
+    assert widget._wnd_proc(100, widget.WM_TIMER, widget.SHELL_SYNC_TIMER_ID, 0) == 0
+    assert reposition_calls == [100]
 
 
 def test_shell_timer_repairs_presentation_without_loading_quota(monkeypatch):
@@ -606,13 +689,18 @@ def test_shell_timer_repairs_presentation_without_loading_quota(monkeypatch):
     )
     monkeypatch.setattr(
         widget,
+        "_reposition",
+        lambda hwnd: calls.append(("position", hwnd)) or True,
+    )
+    monkeypatch.setattr(
+        widget,
         "build_tracker_view",
         lambda *_: calls.append("view") or current,
     )
     monkeypatch.setattr(widget, "u32", SimpleNamespace(DefWindowProcW=lambda *_: -1))
 
     assert widget._wnd_proc(100, widget.WM_TIMER, widget.SHELL_SYNC_TIMER_ID, 0) == 0
-    assert calls == [("visibility", 100), ("z-order", 100)]
+    assert calls == [("visibility", 100), ("position", 100), ("z-order", 100)]
     assert runtime.ticks == 4
 
 
@@ -711,6 +799,35 @@ def test_z_order_repair_skips_when_taskbar_is_not_above(monkeypatch):
     assert calls == []
 
 
+def test_child_z_order_repair_moves_widget_to_top_of_taskbar_band(monkeypatch):
+    """A shell child reorder must be repaired within Shell_TrayWnd siblings."""
+    calls = []
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            FindWindowW=lambda *_: 300,
+            IsWindowVisible=lambda _h: 1,
+            GetParent=lambda _h: 300,
+            GetWindow=lambda _h, _command: 301,
+            SetWindowPos=lambda *args: calls.append(args) or 1,
+        ),
+    )
+
+    assert widget._ensure_overlay_above_taskbar(100) is True
+    assert calls == [
+        (
+            100,
+            widget.HWND_TOP,
+            0,
+            0,
+            0,
+            0,
+            widget.SWP_NOMOVE | widget.SWP_NOSIZE | widget.SWP_NOACTIVATE,
+        )
+    ]
+
+
 def test_changed_view_invalidates_without_background_erase(monkeypatch):
     """A quota update must not expose a transparent frame before repainting."""
     current = _view("old")
@@ -734,8 +851,8 @@ def test_changed_view_invalidates_without_background_erase(monkeypatch):
     assert invalidate_calls == [(100, None, 0)]
 
 
-def test_overlay_popup_is_unowned_topmost_tool_window(monkeypatch):
-    """The overlay must stay above the taskbar without inheriting its owner lifecycle."""
+def test_taskbar_child_is_created_inside_explorer_taskbar(monkeypatch):
+    """Explorer must host the widget so Start cannot cover its taskbar surface."""
     captured = []
     monkeypatch.setattr(
         widget,
@@ -743,13 +860,17 @@ def test_overlay_popup_is_unowned_topmost_tool_window(monkeypatch):
         SimpleNamespace(CreateWindowExW=lambda *args: captured.append(args) or 321),
     )
 
-    result = widget._create_overlay_popup(11, "TrackerClass", 400)
+    result = widget._create_taskbar_child(11, "TrackerClass", 400, 99)
 
     assert result == 321
-    assert captured[0][8] is None
-    assert captured[0][0] & widget.WS_EX_TOPMOST
+    assert captured[0][8] == 99
+    assert captured[0][1] == "TrackerClass"
+    assert captured[0][3] & widget.WS_CHILD
+    assert captured[0][3] & widget.WS_CLIPCHILDREN
+    assert captured[0][3] & widget.WS_CLIPSIBLINGS
     assert captured[0][0] & widget.WS_EX_NOACTIVATE
     assert captured[0][0] & widget.WS_EX_LAYERED
+    assert captured[0][0] & widget.WS_EX_TOPMOST
 
 
 def test_create_window_stops_when_taskbar_owner_is_missing(monkeypatch):
