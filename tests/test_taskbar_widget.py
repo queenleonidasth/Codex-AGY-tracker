@@ -507,5 +507,3 @@ def test_create_window_retries_when_taskbar_has_zero_geometry(monkeypatch):
 
     assert widget._create_window(max_retries=1, retry_delay=0) is False
     assert create_calls == []
-
-
