@@ -75,6 +75,7 @@ FW_BOLD = 700
 DEFAULT_CHARSET = 1
 ANTIALIASED_QUALITY = 4
 COLORKEY_RGB = 0x00010101
+TASKBAR_RIGHT_RESERVE = 230
 u32 = ctypes.windll.user32
 g32 = ctypes.windll.gdi32
 k32 = ctypes.windll.kernel32
@@ -144,6 +145,11 @@ u32.SetForegroundWindow.restype = BOOL
 u32.RegisterWindowMessageW.argtypes = [ctypes.c_wchar_p]
 u32.RegisterWindowMessageW.restype = UINT
 WM_TASKBARCREATED = u32.RegisterWindowMessageW("TaskbarCreated")
+MSGFLT_ALLOW = 1
+if hasattr(u32, "ChangeWindowMessageFilterEx"):
+    u32.ChangeWindowMessageFilterEx.argtypes = [HANDLE, UINT, DWORD, ctypes.c_void_p]
+    u32.ChangeWindowMessageFilterEx.restype = BOOL
+
 
 g32.CreateSolidBrush.argtypes = [ctypes.c_uint]
 g32.CreateSolidBrush.restype = HANDLE
@@ -227,6 +233,7 @@ class _Runtime:
     view: TrackerView
     hwnd: Optional[HWND] = None
     ticks: int = 0
+    last_position: Optional[tuple[int, int, int, int]] = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -316,29 +323,56 @@ def _render_segments(
     return tuple(segments)
 
 
-def _reposition(hwnd: HWND) -> None:
-    if _runtime is None:
-        return
+def _taskbar_overlay_position(
+    taskbar_bounds: tuple[int, int, int, int],
+    configured_width: int,
+) -> Optional[tuple[int, int, int, int]]:
+    left, top, right, bottom = taskbar_bounds
+    taskbar_width = right - left
+    taskbar_height = bottom - top
+    if taskbar_width <= 0 or taskbar_height <= 0:
+        return None
+    width = taskbar_overlay_width(configured_width, taskbar_width)
+    if taskbar_width >= taskbar_height:
+        x = max(left, right - width - TASKBAR_RIGHT_RESERVE)
+        return x, top, width, taskbar_height
+    width = taskbar_width
+    height = min(180, max(60, taskbar_height - 150))
+    return left, bottom - height - 100, width, height
+
+
+def _reposition(hwnd: HWND) -> bool:
+    if _runtime is None or not hwnd:
+        return False
     taskbar = u32.FindWindowW("Shell_TrayWnd", None)
     bounds = wintypes.RECT()
     if not taskbar or not u32.GetWindowRect(taskbar, ctypes.byref(bounds)):
-        return
-    taskbar_width = bounds.right - bounds.left
-    taskbar_height = bounds.bottom - bounds.top
-    width = taskbar_overlay_width(
+        return False
+    taskbar_bounds = (bounds.left, bounds.top, bounds.right, bounds.bottom)
+    if bounds.right <= bounds.left or bounds.bottom <= bounds.top:
+        return False
+    position = _taskbar_overlay_position(
+        taskbar_bounds,
         int(_runtime.settings.display.get("width", 460)),
-        taskbar_width,
     )
-    if taskbar_width >= taskbar_height:
-        height = taskbar_height
-        x = max(bounds.left, bounds.right - width - 230)
-        y = bounds.top
-    else:
-        width = taskbar_width
-        height = min(180, max(60, taskbar_height - 150))
-        x = bounds.left
-        y = bounds.bottom - height - 100
-    u32.SetWindowPos(hwnd, None, x, y, width, height, SWP_NOZORDER | SWP_NOACTIVATE)
+    if position is None:
+        return False
+    if _runtime.last_position == position:
+        return True
+    x, y, width, height = position
+    if not u32.SetWindowPos(
+        hwnd,
+        None,
+        x,
+        y,
+        width,
+        height,
+        SWP_NOZORDER | SWP_NOACTIVATE,
+    ):
+        return False
+    _runtime.last_position = position
+    return True
+
 
 
 def _measure_text(hdc: HDC, text: str) -> int:
@@ -494,10 +528,17 @@ def _create_window(max_retries: int = 30, retry_delay: float = 0.5) -> bool:
     import time
 
     taskbar = None
+    bounds = wintypes.RECT()
+    get_rect = getattr(u32, "GetWindowRect", None)
     for attempt in range(max_retries):
         taskbar = u32.FindWindowW("Shell_TrayWnd", None)
         if taskbar:
-            break
+            if get_rect and get_rect(taskbar, ctypes.byref(bounds)):
+                if (bounds.right - bounds.left) > 0 and (bounds.bottom - bounds.top) > 0:
+                    break
+                taskbar = None
+            else:
+                break
         if attempt < max_retries - 1 and retry_delay > 0:
             time.sleep(retry_delay)
 
@@ -528,6 +569,11 @@ def _create_window(max_retries: int = 30, retry_delay: float = 0.5) -> bool:
     )
     if not _runtime.hwnd:
         return False
+    if hasattr(u32, "ChangeWindowMessageFilterEx") and WM_TASKBARCREATED:
+        try:
+            u32.ChangeWindowMessageFilterEx(_runtime.hwnd, WM_TASKBARCREATED, MSGFLT_ALLOW, None)
+        except (AttributeError, OSError):
+            pass
     u32.SetLayeredWindowAttributes(_runtime.hwnd, COLORKEY_RGB, 0, LWA_COLORKEY)
     _reposition(_runtime.hwnd)
     u32.SetTimer(
@@ -539,6 +585,7 @@ def _create_window(max_retries: int = 30, retry_delay: float = 0.5) -> bool:
     u32.ShowWindow(_runtime.hwnd, 5)
     u32.UpdateWindow(_runtime.hwnd)
     return True
+
 
 
 def run_taskbar(

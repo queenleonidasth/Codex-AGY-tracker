@@ -18,7 +18,18 @@ def _runtime(view: TrackerView, ticks: int = 0) -> SimpleNamespace:
         view=view,
         store=SimpleNamespace(load=lambda: {}),
         settings=SimpleNamespace(enabled_providers=("agy", "codex")),
+        last_position=None,
+        fullscreen_hidden=False,
     )
+
+
+def _rect_reader(bounds):
+    def read(_hwnd, rect_pointer):
+        rect = rect_pointer._obj
+        rect.left, rect.top, rect.right, rect.bottom = bounds
+        return 1
+
+    return read
 
 
 def _window(window_id: str, label: str, remaining: float) -> WindowView:
@@ -50,6 +61,42 @@ def test_right_aligned_start_keeps_twelve_pixel_margin():
 def test_right_aligned_start_falls_back_to_left_margin_for_overflow():
     """Long content must not receive a negative or off-window start coordinate."""
     assert widget._right_aligned_start(client_width=400, content_width=410) == 10
+
+
+def test_horizontal_position_keeps_230_pixel_right_reserve():
+    """A geometry refresh must preserve the user's current taskbar-relative anchor."""
+    assert widget._taskbar_overlay_position((0, 1032, 1920, 1080), 460) == (
+        1290,
+        1032,
+        400,
+        48,
+    )
+
+
+def test_taskbar_position_rejects_zero_sized_bounds():
+    """Transient Explorer geometry must not collapse or move the overlay."""
+    assert widget._taskbar_overlay_position((0, 0, 0, 0), 400) is None
+
+
+def test_reposition_skips_unchanged_valid_position(monkeypatch):
+    """Repeated display notifications must not move an already-correct overlay."""
+    runtime = _runtime(_view("test"))
+    runtime.settings.display = {"width": 460}
+    runtime.last_position = (1290, 1032, 400, 48)
+    set_position_calls = []
+    monkeypatch.setattr(widget, "_runtime", runtime)
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            FindWindowW=lambda *_: 99,
+            GetWindowRect=_rect_reader((0, 1032, 1920, 1080)),
+            SetWindowPos=lambda *args: set_position_calls.append(args) or 1,
+        ),
+    )
+
+    assert widget._reposition(100) is True
+    assert set_position_calls == []
 
 
 def test_render_segments_preserve_compact_provider_text_order():
@@ -190,7 +237,6 @@ def test_create_window_stops_when_taskbar_owner_is_missing(monkeypatch):
     assert widget._create_window(max_retries=1, retry_delay=0) is False
     assert create_calls == []
 
-
 def test_run_taskbar_sets_retry_timer_when_initial_window_creation_fails(monkeypatch):
     """When Explorer is not available on startup, run_taskbar must set a retry timer instead of exiting immediately."""
     timer_calls = []
@@ -227,4 +273,58 @@ def test_run_taskbar_sets_retry_timer_when_initial_window_creation_fails(monkeyp
     assert result == 0
     assert ("set", (None, 0, 2000, None)) in timer_calls
     assert ("kill", (None, 999)) in timer_calls
+
+
+def test_reposition_ignores_zero_dimensions(monkeypatch):
+    """Repositioning must not collapse the window if taskbar has not finished layout."""
+    set_position_calls = []
+    monkeypatch.setattr(widget, "_runtime", _runtime(_view("test")))
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            FindWindowW=lambda *_: 99,
+            GetWindowRect=lambda _h, r: setattr(r._obj, "right", 0) or setattr(r._obj, "bottom", 0) or 1,
+            SetWindowPos=lambda *args: set_position_calls.append(args),
+        ),
+    )
+
+    widget._reposition(100)
+    assert set_position_calls == []
+
+
+def test_create_window_retries_when_taskbar_has_zero_geometry(monkeypatch):
+    """When Explorer exists but has 0 width or 0 height, create_window must wait."""
+    create_calls = []
+    monkeypatch.setattr(
+        widget,
+        "_runtime",
+        SimpleNamespace(
+            hwnd=None,
+            settings=SimpleNamespace(display={"width": 400, "update_interval_ms": 1_000}),
+        ),
+    )
+    monkeypatch.setattr(widget, "_background_brush", None)
+    monkeypatch.setattr(widget, "_wndproc_ref", None)
+    monkeypatch.setattr(widget, "k32", SimpleNamespace(GetModuleHandleW=lambda *_: 11))
+    monkeypatch.setattr(widget, "g32", SimpleNamespace(CreateSolidBrush=lambda *_: 22))
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            FindWindowW=lambda *_: 99,
+            GetWindowRect=lambda _h, r: setattr(r._obj, "right", 0) or setattr(r._obj, "bottom", 0) or 1,
+            LoadCursorW=lambda *_: 33,
+            RegisterClassExW=lambda *_: 1,
+            CreateWindowExW=lambda *args: create_calls.append(args) or 321,
+            SetLayeredWindowAttributes=lambda *_: 1,
+            SetTimer=lambda *_: 1,
+            ShowWindow=lambda *_: 1,
+            UpdateWindow=lambda *_: 1,
+        ),
+    )
+
+    assert widget._create_window(max_retries=1, retry_delay=0) is False
+    assert create_calls == []
+
 
