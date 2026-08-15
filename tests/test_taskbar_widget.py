@@ -431,8 +431,8 @@ def test_render_segments_include_waiting_text_without_providers():
     assert segments[0].gap_after == 0
 
 
-def test_timer_never_repositions_or_changes_z_order(monkeypatch):
-    """Explorer activity must not start a periodic Z-order fight."""
+def test_shell_timer_never_repositions_when_order_is_already_correct(monkeypatch):
+    """Shell checks must not start a periodic positioning or Z-order fight."""
     current = _view("same")
     reposition_calls = []
     set_position_calls = []
@@ -460,11 +460,89 @@ def test_timer_never_repositions_or_changes_z_order(monkeypatch):
         ),
     )
 
-    assert widget._wnd_proc(100, widget.WM_TIMER, 0, 0) == 0
+    assert widget._wnd_proc(100, widget.WM_TIMER, widget.SHELL_SYNC_TIMER_ID, 0) == 0
     assert visibility_syncs == [100]
     assert z_order_syncs == [100]
     assert reposition_calls == []
     assert set_position_calls == []
+
+
+def test_shell_timer_repairs_presentation_without_loading_quota(monkeypatch):
+    """Fast shell checks must not turn into high-frequency state loads."""
+    current = _view("same")
+    runtime = _runtime(current, ticks=4)
+    calls = []
+    runtime.store = SimpleNamespace(load=lambda: calls.append("load") or {})
+    monkeypatch.setattr(widget, "_runtime", runtime)
+    monkeypatch.setattr(
+        widget,
+        "_sync_overlay_visibility",
+        lambda hwnd: calls.append(("visibility", hwnd)),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_ensure_overlay_above_taskbar",
+        lambda hwnd: calls.append(("z-order", hwnd)),
+    )
+    monkeypatch.setattr(
+        widget,
+        "build_tracker_view",
+        lambda *_: calls.append("view") or current,
+    )
+    monkeypatch.setattr(widget, "u32", SimpleNamespace(DefWindowProcW=lambda *_: -1))
+
+    assert widget._wnd_proc(100, widget.WM_TIMER, widget.SHELL_SYNC_TIMER_ID, 0) == 0
+    assert calls == [("visibility", 100), ("z-order", 100)]
+    assert runtime.ticks == 4
+
+
+def test_data_timer_refreshes_quota_without_shell_sync(monkeypatch):
+    """The configurable data tick must not duplicate presentation checks."""
+    current = _view("same")
+    calls = []
+    monkeypatch.setattr(widget, "_runtime", _runtime(current, ticks=4))
+    monkeypatch.setattr(
+        widget,
+        "build_tracker_view",
+        lambda *_: calls.append("view") or current,
+    )
+    monkeypatch.setattr(
+        widget,
+        "_sync_overlay_visibility",
+        lambda _hwnd: calls.append("visibility"),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_ensure_overlay_above_taskbar",
+        lambda _hwnd: calls.append("z-order"),
+    )
+    monkeypatch.setattr(widget, "u32", SimpleNamespace(DefWindowProcW=lambda *_: -1))
+
+    assert widget._wnd_proc(100, widget.WM_TIMER, widget.DATA_REFRESH_TIMER_ID, 0) == 0
+    assert calls == ["view"]
+    assert widget._runtime.ticks == 5
+
+
+def test_close_stops_both_window_timers(monkeypatch):
+    """Closing the overlay must not leave either timer registered."""
+    calls = []
+    monkeypatch.setattr(widget, "_runtime", _runtime(_view("same")))
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            KillTimer=lambda *args: calls.append(("kill", args)),
+            DestroyWindow=lambda hwnd: calls.append(("destroy", hwnd)),
+            DefWindowProcW=lambda *_: -1,
+        ),
+    )
+
+    assert widget._wnd_proc(100, widget.WM_CLOSE, 0, 0) == 0
+    assert calls == [
+        ("kill", (100, widget.DATA_REFRESH_TIMER_ID)),
+        ("kill", (100, widget.SHELL_SYNC_TIMER_ID)),
+        ("destroy", 100),
+    ]
 
 
 def test_z_order_repair_raises_overlay_when_taskbar_is_above(monkeypatch):
@@ -531,7 +609,7 @@ def test_changed_view_invalidates_without_background_erase(monkeypatch):
         ),
     )
 
-    assert widget._wnd_proc(100, widget.WM_TIMER, 0, 0) == 0
+    assert widget._wnd_proc(100, widget.WM_TIMER, widget.DATA_REFRESH_TIMER_ID, 0) == 0
     assert widget._runtime.view is changed
     assert invalidate_calls == [(100, None, 0)]
 
@@ -587,6 +665,52 @@ def test_create_window_stops_when_taskbar_owner_is_missing(monkeypatch):
 
     assert widget._create_window(max_retries=1, retry_delay=0) is False
     assert create_calls == []
+
+
+def test_create_window_registers_data_and_shell_timers(monkeypatch):
+    """Creation must schedule fast shell checks separately from data refreshes."""
+    timer_calls = []
+    monkeypatch.setattr(
+        widget,
+        "_runtime",
+        SimpleNamespace(
+            hwnd=None,
+            settings=SimpleNamespace(display={"width": 400, "update_interval_ms": 1_000}),
+        ),
+    )
+    monkeypatch.setattr(widget, "_background_brush", None)
+    monkeypatch.setattr(widget, "_wndproc_ref", None)
+    monkeypatch.setattr(widget, "_reposition", lambda *_: True)
+    monkeypatch.setattr(widget, "k32", SimpleNamespace(GetModuleHandleW=lambda *_: 11))
+    monkeypatch.setattr(widget, "g32", SimpleNamespace(CreateSolidBrush=lambda *_: 22))
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            FindWindowW=lambda *_: 99,
+            GetWindowRect=lambda _h, rect: (
+                setattr(rect._obj, "left", 0)
+                or setattr(rect._obj, "top", 1032)
+                or setattr(rect._obj, "right", 1920)
+                or setattr(rect._obj, "bottom", 1080)
+                or 1
+            ),
+            LoadCursorW=lambda *_: 33,
+            RegisterClassExW=lambda *_: 1,
+            CreateWindowExW=lambda *_: 321,
+            SetLayeredWindowAttributes=lambda *_: 1,
+            SetTimer=lambda *args: timer_calls.append(args) or args[1],
+            ShowWindow=lambda *_: 1,
+            UpdateWindow=lambda *_: 1,
+        ),
+    )
+
+    assert widget._create_window(max_retries=1, retry_delay=0) is True
+    assert timer_calls == [
+        (321, widget.DATA_REFRESH_TIMER_ID, 1_000, None),
+        (321, widget.SHELL_SYNC_TIMER_ID, 50, None),
+    ]
+
 
 def test_run_taskbar_sets_retry_timer_when_initial_window_creation_fails(monkeypatch):
     """When Explorer is not available on startup, run_taskbar must set a retry timer instead of exiting immediately."""

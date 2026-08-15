@@ -81,6 +81,9 @@ ANTIALIASED_QUALITY = 4
 COLORKEY_RGB = 0x00010101
 TASKBAR_RIGHT_RESERVE = 230
 FULLSCREEN_TOLERANCE_PX = 2
+DATA_REFRESH_TIMER_ID = 1
+SHELL_SYNC_TIMER_ID = 2
+SHELL_SYNC_INTERVAL_MS = 50
 GW_HWNDPREV = 3
 HWND_TOPMOST = -1
 u32 = ctypes.windll.user32
@@ -639,15 +642,22 @@ def _wnd_proc(hwnd: HWND, message: int, wparam: int, lparam: int) -> int:
         return u32.DefWindowProcW(hwnd, message, wparam, lparam)
     try:
         if message == WM_TIMER:
-            _runtime.ticks += 1
-            _sync_overlay_visibility(hwnd)
-            if not _runtime.overlay_hidden:
-                _ensure_overlay_above_taskbar(hwnd)
-            view = build_tracker_view(_runtime.store.load(), _runtime.settings.enabled_providers)
-            if view.fingerprint != _runtime.view.fingerprint:
-                _runtime.view = view
-                u32.InvalidateRect(hwnd, None, 0)
-            return 0
+            if wparam == SHELL_SYNC_TIMER_ID:
+                _sync_overlay_visibility(hwnd)
+                if not _runtime.overlay_hidden:
+                    _ensure_overlay_above_taskbar(hwnd)
+                return 0
+            if wparam == DATA_REFRESH_TIMER_ID:
+                _runtime.ticks += 1
+                view = build_tracker_view(
+                    _runtime.store.load(),
+                    _runtime.settings.enabled_providers,
+                )
+                if view.fingerprint != _runtime.view.fingerprint:
+                    _runtime.view = view
+                    u32.InvalidateRect(hwnd, None, 0)
+                return 0
+            return u32.DefWindowProcW(hwnd, message, wparam, lparam)
         if message == WM_PAINT:
             _paint(hwnd)
             return 0
@@ -663,7 +673,8 @@ def _wnd_proc(hwnd: HWND, message: int, wparam: int, lparam: int) -> int:
             _show_menu(hwnd)
             return 0
         if message == WM_CLOSE:
-            u32.KillTimer(hwnd, 1)
+            u32.KillTimer(hwnd, DATA_REFRESH_TIMER_ID)
+            u32.KillTimer(hwnd, SHELL_SYNC_TIMER_ID)
             u32.DestroyWindow(hwnd)
             return 0
         if message == WM_DESTROY:
@@ -755,8 +766,14 @@ def _create_window(max_retries: int = 30, retry_delay: float = 0.5) -> bool:
     _reposition(_runtime.hwnd)
     u32.SetTimer(
         _runtime.hwnd,
-        1,
+        DATA_REFRESH_TIMER_ID,
         int(_runtime.settings.display.get("update_interval_ms", 1_000)),
+        None,
+    )
+    u32.SetTimer(
+        _runtime.hwnd,
+        SHELL_SYNC_TIMER_ID,
+        SHELL_SYNC_INTERVAL_MS,
         None,
     )
     u32.ShowWindow(_runtime.hwnd, 5)
