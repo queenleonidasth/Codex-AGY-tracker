@@ -66,6 +66,8 @@ DT_LEFT = 0x0000
 DT_NOCLIP = 0x0100
 SWP_NOACTIVATE = 0x0010
 SWP_NOZORDER = 0x0004
+SW_HIDE = 0
+SW_SHOWNOACTIVATE = 4
 LWA_COLORKEY = 0x00000001
 TPM_RETURNCMD = 0x0100
 MF_STRING = 0x0000
@@ -259,6 +261,7 @@ class _Runtime:
     hwnd: Optional[HWND] = None
     ticks: int = 0
     last_position: Optional[tuple[int, int, int, int]] = None
+    fullscreen_hidden: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -444,6 +447,21 @@ def _foreground_fullscreen_on_taskbar_monitor(
     return _rect_covers_monitor(foreground_bounds, foreground_monitor[1])
 
 
+def _sync_fullscreen_visibility(hwnd: HWND) -> None:
+    if _runtime is None or not hwnd:
+        return
+    fullscreen = _foreground_fullscreen_on_taskbar_monitor(hwnd)
+    if fullscreen is None:
+        return
+    if fullscreen and not _runtime.fullscreen_hidden:
+        u32.ShowWindow(hwnd, SW_HIDE)
+        _runtime.fullscreen_hidden = True
+    elif not fullscreen and _runtime.fullscreen_hidden:
+        _reposition(hwnd)
+        u32.ShowWindow(hwnd, SW_SHOWNOACTIVATE)
+        _runtime.fullscreen_hidden = False
+
+
 def _reposition(hwnd: HWND) -> bool:
     if _runtime is None or not hwnd:
         return False
@@ -567,6 +585,7 @@ def _wnd_proc(hwnd: HWND, message: int, wparam: int, lparam: int) -> int:
     try:
         if message == WM_TIMER:
             _runtime.ticks += 1
+            _sync_fullscreen_visibility(hwnd)
             view = build_tracker_view(_runtime.store.load(), _runtime.settings.enabled_providers)
             if view.fingerprint != _runtime.view.fingerprint:
                 _runtime.view = view
