@@ -2,9 +2,9 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Prevent a visible pause when clicking the Windows taskbar by repairing Q-Tracker visibility and relative Z-order within a dedicated 50-millisecond shell-state interval.
+**Goal:** Prevent a visible pause when clicking the Windows taskbar by repairing Q-Tracker visibility and relative Z-order through WinEvent hooks with a dedicated 10-millisecond fallback interval.
 
-**Architecture:** Keep the configurable data-refresh timer responsible only for loading quota state and updating the rendered view. Add a second fixed-rate timer responsible only for taskbar/fullscreen visibility and conditional Z-order repair, with timer IDs routing each `WM_TIMER` message to exactly one responsibility.
+**Architecture:** Keep the configurable data-refresh timer responsible only for loading quota state and updating the rendered view. Use foreground and object-reorder WinEvent hooks for immediate conditional Z-order repair, with a second 10-millisecond timer responsible for taskbar/fullscreen visibility and fallback Z-order repair. Timer IDs route each `WM_TIMER` message to exactly one responsibility.
 
 **Tech Stack:** Python 3.13, ctypes, Win32 User32 timers, pytest, PyInstaller
 
@@ -13,7 +13,7 @@
 - Q-Tracker remains an unowned `WS_EX_TOPMOST | WS_EX_NOACTIVATE` popup.
 - The taskbar remains only a geometry, visibility, and relative Z-order sensor.
 - The right reserve remains exactly 230 pixels.
-- Shell-state synchronization runs every 50 milliseconds and performs no quota-state load.
+- Shell-state synchronization runs every 10 milliseconds as a fallback and performs no quota-state load.
 - Data refresh retains its configured interval, normally 1,000 milliseconds, and performs no duplicate shell-state synchronization.
 - Fullscreen and borderless fullscreen hide Q-Tracker; Desktop, taskbar, and maximized-window interaction keep it visible.
 
@@ -28,7 +28,7 @@
 
 **Interfaces:**
 - Consumes: `WM_TIMER`, Win32 timer ID in `wparam`, configured `update_interval_ms`, `_sync_overlay_visibility(hwnd)`, and `_ensure_overlay_above_taskbar(hwnd)`.
-- Produces: `DATA_REFRESH_TIMER_ID = 1`, `SHELL_SYNC_TIMER_ID = 2`, and `SHELL_SYNC_INTERVAL_MS = 50`.
+- Produces: `DATA_REFRESH_TIMER_ID = 1`, `SHELL_SYNC_TIMER_ID = 2`, and `SHELL_SYNC_INTERVAL_MS = 10`.
 
 - [ ] **Step 1: Write failing timer-routing regression tests**
 
@@ -78,7 +78,7 @@ Expected: FAIL because the timer IDs do not exist and all `WM_TIMER` messages cu
 ```python
 DATA_REFRESH_TIMER_ID = 1
 SHELL_SYNC_TIMER_ID = 2
-SHELL_SYNC_INTERVAL_MS = 50
+SHELL_SYNC_INTERVAL_MS = 10
 ```
 
 In `_wnd_proc`, handle `SHELL_SYNC_TIMER_ID` by synchronizing visibility and, only when the runtime is not hidden, repairing Z-order. Handle `DATA_REFRESH_TIMER_ID` by incrementing ticks, loading state, rebuilding the view, and invalidating only on fingerprint change. Delegate unknown timer IDs to `DefWindowProcW`.
@@ -146,7 +146,7 @@ def test_create_window_registers_data_and_shell_timers(monkeypatch):
     assert widget._create_window(max_retries=1, retry_delay=0) is True
 assert timer_calls == [
     (321, widget.DATA_REFRESH_TIMER_ID, 1_000, None),
-    (321, widget.SHELL_SYNC_TIMER_ID, 50, None),
+    (321, widget.SHELL_SYNC_TIMER_ID, 10, None),
 ]
 ```
 

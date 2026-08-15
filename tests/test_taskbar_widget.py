@@ -801,7 +801,7 @@ def test_create_window_registers_data_and_shell_timers(monkeypatch):
     assert widget._create_window(max_retries=1, retry_delay=0) is True
     assert timer_calls == [
         (321, widget.DATA_REFRESH_TIMER_ID, 1_000, None),
-        (321, widget.SHELL_SYNC_TIMER_ID, 50, None),
+        (321, widget.SHELL_SYNC_TIMER_ID, 10, None),
     ]
 
 
