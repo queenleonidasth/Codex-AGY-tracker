@@ -117,7 +117,7 @@ Exit จาก tray แล้วเปิด `run.bat` ใหม่ ตัว wi
 
 **การแสดงผลเมื่อเปิดหน้าต่างเต็มจอ**
 
-Q-Tracker ยังคงแสดงเมื่อหน้าต่างถูก Maximize ตามปกติและ Windows taskbar ยังอยู่ แต่จะซ่อนอัตโนมัติเมื่อเกมหรือวิดีโอด้านหน้าใช้ fullscreen/borderless fullscreen บนจอเดียวกับ taskbar และจะแสดงกลับโดยไม่แย่ง focus เมื่อออกจากโหมดเต็มจอ
+Q-Tracker เป็น topmost tool window ที่ไม่ผูก owner/lifecycle กับ taskbar โดยใช้ taskbar เฉพาะสำหรับตำแหน่งและสถานะซ่อน/แสดง จึงยังแสดงเมื่อคลิก Desktop หรือ Maximize หน้าต่างตามปกติ แต่จะซ่อนอัตโนมัติเมื่อ taskbar ไม่พร้อมใช้งาน หรือเมื่อเกม/วิดีโอด้านหน้าใช้ fullscreen/borderless fullscreen บนจอเดียวกัน และจะแสดงกลับโดยไม่แย่ง focus
 
 **ต้องการตรวจสุขภาพโดยไม่เปิด console ค้าง**
 
