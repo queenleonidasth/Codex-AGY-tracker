@@ -65,6 +65,7 @@ WM_TIMER = 0x0113
 WM_RBUTTONDOWN = 0x0204
 WM_LBUTTONDBLCLK = 0x0203
 WM_DPICHANGED = 0x02E0
+WM_SHELL_ZORDER_REPAIR = 0x8001
 EVENT_SYSTEM_FOREGROUND = 0x0003
 EVENT_OBJECT_REORDER = 0x8004
 WINEVENT_OUTOFCONTEXT = 0x0000
@@ -529,6 +530,9 @@ def _on_win_event(
     try:
         if _runtime is not None and _runtime.hwnd and not _runtime.overlay_hidden:
             _ensure_overlay_above_taskbar(_runtime.hwnd)
+            post_message = getattr(u32, "PostMessageW", None)
+            if post_message is not None:
+                post_message(_runtime.hwnd, WM_SHELL_ZORDER_REPAIR, 0, 0)
     except Exception:
         # WinEvent callbacks must never escape into the native callback boundary.
         return
@@ -779,6 +783,10 @@ def _wnd_proc(hwnd: HWND, message: int, wparam: int, lparam: int) -> int:
     if _runtime is None:
         return u32.DefWindowProcW(hwnd, message, wparam, lparam)
     try:
+        if message == WM_SHELL_ZORDER_REPAIR:
+            if not _runtime.overlay_hidden:
+                _ensure_overlay_above_taskbar(hwnd)
+            return 0
         if message == WM_TIMER:
             if wparam == SHELL_SYNC_TIMER_ID:
                 _sync_overlay_visibility(hwnd)

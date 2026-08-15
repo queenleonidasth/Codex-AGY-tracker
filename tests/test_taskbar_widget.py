@@ -274,6 +274,33 @@ def test_foreground_event_repairs_z_order_without_waiting_for_timer(monkeypatch)
     assert calls == [100]
 
 
+def test_win_event_posts_deferred_repair_after_shell_reorder(monkeypatch):
+    """A queued repair must run after the shell finishes its native Z-order change."""
+    runtime = _runtime(_view("test"))
+    runtime.hwnd = 100
+    calls = []
+    monkeypatch.setattr(widget, "_runtime", runtime)
+    monkeypatch.setattr(
+        widget,
+        "_ensure_overlay_above_taskbar",
+        lambda hwnd: calls.append(("ensure", hwnd)),
+    )
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            PostMessageW=lambda *args: calls.append(("post", args)) or 1,
+        ),
+    )
+
+    widget._on_win_event(0, widget.EVENT_OBJECT_REORDER, 300, 0, 0, 0, 0)
+
+    assert calls == [
+        ("ensure", 100),
+        ("post", (100, widget.WM_SHELL_ZORDER_REPAIR, 0, 0)),
+    ]
+
+
 def test_reorder_event_repairs_taskbar_overlap(monkeypatch):
     """The reorder event must repair the taskbar after its Z-order change."""
     runtime = _runtime(_view("test"))
