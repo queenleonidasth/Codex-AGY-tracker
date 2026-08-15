@@ -437,6 +437,7 @@ def test_timer_never_repositions_or_changes_z_order(monkeypatch):
     reposition_calls = []
     set_position_calls = []
     visibility_syncs = []
+    z_order_syncs = []
     monkeypatch.setattr(widget, "_runtime", _runtime(current, ticks=4))
     monkeypatch.setattr(widget, "build_tracker_view", lambda *_: current)
     monkeypatch.setattr(widget, "_reposition", lambda hwnd: reposition_calls.append(hwnd))
@@ -444,6 +445,11 @@ def test_timer_never_repositions_or_changes_z_order(monkeypatch):
         widget,
         "_sync_overlay_visibility",
         lambda hwnd: visibility_syncs.append(hwnd),
+    )
+    monkeypatch.setattr(
+        widget,
+        "_ensure_overlay_above_taskbar",
+        lambda hwnd: z_order_syncs.append(hwnd),
     )
     monkeypatch.setattr(
         widget,
@@ -456,8 +462,55 @@ def test_timer_never_repositions_or_changes_z_order(monkeypatch):
 
     assert widget._wnd_proc(100, widget.WM_TIMER, 0, 0) == 0
     assert visibility_syncs == [100]
+    assert z_order_syncs == [100]
     assert reposition_calls == []
     assert set_position_calls == []
+
+
+def test_z_order_repair_raises_overlay_when_taskbar_is_above(monkeypatch):
+    """A visible taskbar above the overlay must trigger one non-activating raise."""
+    calls = []
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            FindWindowW=lambda *_: 300,
+            IsWindowVisible=lambda _h: 1,
+            GetWindow=lambda hwnd, _command: 300 if hwnd == 100 else 0,
+            SetWindowPos=lambda *args: calls.append(args) or 1,
+        ),
+    )
+
+    assert widget._ensure_overlay_above_taskbar(100) is True
+    assert calls == [
+        (
+            100,
+            widget.HWND_TOPMOST,
+            0,
+            0,
+            0,
+            0,
+            widget.SWP_NOMOVE | widget.SWP_NOSIZE | widget.SWP_NOACTIVATE,
+        )
+    ]
+
+
+def test_z_order_repair_skips_when_taskbar_is_not_above(monkeypatch):
+    """A correctly ordered overlay must not cause periodic compositor churn."""
+    calls = []
+    monkeypatch.setattr(
+        widget,
+        "u32",
+        SimpleNamespace(
+            FindWindowW=lambda *_: 300,
+            IsWindowVisible=lambda _h: 1,
+            GetWindow=lambda *_: 0,
+            SetWindowPos=lambda *args: calls.append(args),
+        ),
+    )
+
+    assert widget._ensure_overlay_above_taskbar(100) is True
+    assert calls == []
 
 
 def test_changed_view_invalidates_without_background_erase(monkeypatch):
@@ -468,6 +521,7 @@ def test_changed_view_invalidates_without_background_erase(monkeypatch):
     monkeypatch.setattr(widget, "_runtime", _runtime(current))
     monkeypatch.setattr(widget, "build_tracker_view", lambda *_: changed)
     monkeypatch.setattr(widget, "_sync_overlay_visibility", lambda _hwnd: None)
+    monkeypatch.setattr(widget, "_ensure_overlay_above_taskbar", lambda _hwnd: True)
     monkeypatch.setattr(
         widget,
         "u32",

@@ -66,6 +66,8 @@ DT_LEFT = 0x0000
 DT_NOCLIP = 0x0100
 SWP_NOACTIVATE = 0x0010
 SWP_NOZORDER = 0x0004
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
 SW_HIDE = 0
 SW_SHOWNOACTIVATE = 4
 LWA_COLORKEY = 0x00000001
@@ -79,6 +81,8 @@ ANTIALIASED_QUALITY = 4
 COLORKEY_RGB = 0x00010101
 TASKBAR_RIGHT_RESERVE = 230
 FULLSCREEN_TOLERANCE_PX = 2
+GW_HWNDPREV = 3
+HWND_TOPMOST = -1
 u32 = ctypes.windll.user32
 g32 = ctypes.windll.gdi32
 k32 = ctypes.windll.kernel32
@@ -92,6 +96,8 @@ u32.GetWindowRect.argtypes = [HANDLE, ctypes.POINTER(wintypes.RECT)]
 u32.GetWindowRect.restype = BOOL
 u32.GetClassNameW.argtypes = [HANDLE, ctypes.POINTER(ctypes.c_wchar), INT]
 u32.GetClassNameW.restype = INT
+u32.GetWindow.argtypes = [HANDLE, UINT]
+u32.GetWindow.restype = HANDLE
 u32.GetClientRect.argtypes = [HANDLE, ctypes.POINTER(wintypes.RECT)]
 u32.GetClientRect.restype = BOOL
 u32.RegisterClassExW.argtypes = [ctypes.c_void_p]
@@ -468,6 +474,30 @@ def _taskbar_visible() -> bool:
     return bool(taskbar and u32.IsWindowVisible(taskbar))
 
 
+def _ensure_overlay_above_taskbar(hwnd: HWND) -> bool:
+    if not hwnd:
+        return False
+    taskbar = u32.FindWindowW("Shell_TrayWnd", None)
+    if not taskbar or not u32.IsWindowVisible(taskbar):
+        return False
+    window_above = u32.GetWindow(hwnd, GW_HWNDPREV)
+    while window_above:
+        if window_above == taskbar:
+            return bool(
+                u32.SetWindowPos(
+                    hwnd,
+                    HWND_TOPMOST,
+                    0,
+                    0,
+                    0,
+                    0,
+                    SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+                )
+            )
+        window_above = u32.GetWindow(window_above, GW_HWNDPREV)
+    return True
+
+
 def _sync_overlay_visibility(hwnd: HWND) -> None:
     if _runtime is None or not hwnd:
         return
@@ -611,6 +641,8 @@ def _wnd_proc(hwnd: HWND, message: int, wparam: int, lparam: int) -> int:
         if message == WM_TIMER:
             _runtime.ticks += 1
             _sync_overlay_visibility(hwnd)
+            if not _runtime.overlay_hidden:
+                _ensure_overlay_above_taskbar(hwnd)
             view = build_tracker_view(_runtime.store.load(), _runtime.settings.enabled_providers)
             if view.fingerprint != _runtime.view.fingerprint:
                 _runtime.view = view
